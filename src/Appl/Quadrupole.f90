@@ -347,8 +347,10 @@
         double precision, intent(out) :: bgrad
         double precision :: bgradp,bgradpp
         double precision :: bb,dd,z10,z20,z3,z4,tmpz
-        double precision :: c1,c2,s1,s2,s3,s4
+        double precision :: s1,s2,s3,s4
+        !double precision :: c1,c2,
         double precision :: tmp1
+        real*8, dimension(8) :: cc
  
         !c1 = -0.00004d0
         !c2 = 4.518219d0
