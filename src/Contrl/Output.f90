@@ -299,9 +299,9 @@
           call flush(30)
         endif
 
-99      format(6(1x,e13.6))
-100      format(7(1x,e13.6))
-101     format(1x,e13.6,3I10)
+99      format(sp,6(1x,es13.6))
+100      format(sp,7(1x,es13.6))
+101     format(sp,1x,es13.6,3I10)
 
         t_diag = t_diag + elapsedtime_Timer(t0)
 
@@ -634,10 +634,10 @@
           call flush(30)
         endif
 
-99      format(6(1x,e16.8))
-100      format(7(1x,e18.10))
-101     format(1x,e16.8,e16.8,3I10)
-102      format(8(1x,e16.8))
+99      format(sp,6(1x,es16.8))
+100      format(sp,7(1x,es18.10))
+101     format(sp,1x,es16.8,es16.8,3I10)
+102      format(sp,(1x,es16.8))
 
         t_diag = t_diag + elapsedtime_Timer(t0)
 
@@ -972,10 +972,10 @@
 !          call flush(29)
         endif
 
-99      format(6(1x,e16.8))
-100      format(7(1x,e16.8))
-101     format(1x,e16.8,e16.8,3I10)
-102      format(8(1x,e16.8))
+99      format(sp,6(1x,es16.8))
+100      format(sp,7(1x,es16.8))
+101     format(sp,1x,es16.8,es16.8,3I10)
+102      format(sp,8(1x,es16.8))
 
         t_diag = t_diag + elapsedtime_Timer(t0)
 
@@ -1309,10 +1309,10 @@
           call flush(30)
         endif
 
-99      format(6(1x,e16.8))
-100      format(7(1x,e16.8))
-101     format(1x,e16.8,e16.8,3I10)
-102      format(8(1x,e16.8))
+99      format(sp,6(1x,es16.8))
+100      format(sp,7(1x,es16.8))
+101     format(sp,1x,es16.8,es16.8,3I10)
+102      format(sp,8(1x,e16.8))
 
         t_diag = t_diag + elapsedtime_Timer(t0)
 
@@ -1729,12 +1729,21 @@
           call flush(32)
         endif
 
-99      format(6(1x,e16.8))
-100     format(7(1x,e16.8))
-101     format(1x,e16.8,e16.8,3I10)
-102     format(8(1x,e16.8))
-103     format(13(1x,e16.8))
-104     format(24(1x,e16.8))
+! original format
+!99      format(6(1x,e16.8))
+!100     format(7(1x,e16.8))
+!101     format(1x,e16.8,e16.8,3I10)
+!102     format(8(1x,e16.8))
+!103     format(13(1x,e16.8))
+!104     format(24(1x,e16.8))
+
+! single space separation with +/- sign out front
+99      format(sp,es15.8,5(1x,es15.8))
+100     format(sp,es15.8,6(1x,es15.8))
+101     format(sp,es15.8,es15.8,3I10)
+102     format(sp,es15.8,7(1x,es15.8))
+103     format(sp,es15.8,12(1x,es15.8))
+104     format(sp,es15.8,23(1x,es15.8))
 
         t_diag = t_diag + elapsedtime_Timer(t0)
 
@@ -1802,7 +1811,7 @@
         endif
 
 !100     format(6(1x,e17.9))
-100     format(6(1x,e20.12))
+100     format(sp,6(1x,es20.12))
 
         deallocate(nptlist)
         deallocate(recvbuf)
@@ -2339,7 +2348,7 @@
 
         deallocate(nptlist)
 
-100     format(3(1x,e14.7))
+100     format(sp,3(1x,es14.7))
 
         end subroutine dens2d_Output
 
@@ -2720,7 +2729,7 @@
 
       call flush(nfile)
 
-777   format(7(1x,e15.7))
+777   format(sp,7(1x,es15.7))
 
       end subroutine sliceprocdep_Output
 
@@ -3062,10 +3071,10 @@
 
         enddo
 
-99      format(6(1x,e16.8))
-100      format(7(1x,e16.8))
-101     format(1x,e16.8,e16.8,3I10)
-102      format(8(1x,e16.8))
+99      format(sp,6(1x,es16.8))
+100      format(sp,7(1x,es16.8))
+101     format(sp,1x,es16.8,es16.8,3I10)
+102      format(sp,8(1x,es16.8))
 
         t_diag = t_diag + elapsedtime_Timer(t0)
 
