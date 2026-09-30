@@ -1,6 +1,6 @@
       module mpistub
         interface MPI_ALLGATHERV
-          module procedure MPI_ALLGATHERV1,MPI_ALLGATHERV2
+          module procedure MPI_ALLGATHERV1,MPI_ALLGATHERV2,MPI_ALLGATHERV3
         end interface
         interface MPI_ALLTOALLV
           module procedure MPI_ALLTOALLV1,MPI_ALLTOALLV2,MPI_ALLTOALLV3
@@ -437,5 +437,15 @@
           recvrhoz = rhoz
 
         end subroutine MPI_ALLGATHERV2
+
+        subroutine MPI_ALLGATHERV3(rhoz,innz,MPI_DOUBLE_PRECISION,recvrhoz,&
+                            ztable,zdisp,MPI_DOUBLE_PRECISION2,commrow,ierr)
+          double precision, dimension(:,:) :: rhoz,recvrhoz
+          integer, dimension(:) :: ztable,zdisp
+          integer :: commrow
+
+          recvrhoz = rhoz
+
+        end subroutine MPI_ALLGATHERV3
 
       end module mpistub

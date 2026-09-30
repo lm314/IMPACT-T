@@ -654,6 +654,7 @@
         integer, dimension(Maxoverlap) :: tmpfile
         double precision :: tmpcur,totchrg,r0,r0tmp
         integer :: flagpt2pt,flagpos, flagcathode !//switch for point-to-point calculation and switch for space-charge with z>0
+        integer :: flagimgnow !//whether the pt2pt image term is on this step (Flagimg, off past zimage)
         double precision :: zz,zorgin,zorgin2,vref,gamin,gam
         double precision, dimension(6) :: ptref
         integer :: idbd,idbend,flagbctmp
@@ -2123,17 +2124,14 @@
 
             do ib = 1, ibunch
               totchrg = Ebunch(ib)%Current/Bfreq
-              if(FlagImage.eq.0) then
-                call kickpt2pt_BeamBunch(nplocal0,Ebunch(ib)%Pts1,t,&
-                Ebunch(ib)%Charge,&
-                Ebunch(ib)%Mass,dtless,Blnelem,zBlnelem,idrfile,Nblem,&
-                ibinit,ibend,fldmp,totchrg,r0,np0,Np(ib))
-              else
-                call kickpt2ptImg_BeamBunch(nplocal0,Ebunch(ib)%Pts1,t,&
-                Ebunch(ib)%Charge,&
-                Ebunch(ib)%Mass,dtless,Blnelem,zBlnelem,idrfile,Nblem,&
-                ibinit,ibend,fldmp,totchrg,r0,np0,Np(ib))
-              endif
+              !//image term follows Flagimg and stops past zimage, the same
+              !//test the mesh solver uses, rather than always being on.
+              flagimgnow = FlagImage
+              if(distance.gt.zimage) flagimgnow = 0
+              call kickpt2ptImg_BeamBunch(nplocal0,Ebunch(ib)%Pts1,t,&
+                 Ebunch(ib)%Charge,&
+                 Ebunch(ib)%Mass,dtless,Blnelem,zBlnelem,idrfile,Nblem,&
+                 ibinit,ibend,fldmp,totchrg,r0,np0,Np(ib),flagimgnow)
             enddo
 
             endif

@@ -1774,39 +1774,36 @@
         !//rays(5,n) > 0 (i.e. z>0).
         subroutine kickpt2ptImg_BeamBunch(nptlc,rays,&
         tg,chge,mass,dt,beamelem,zbeamelem,idrfile,nbeamln,ibinit,&
-        ibend,fldmap,totchrg,r0,npttot,nptrue)
+        ibend,fldmap,totchrg,r0,npttot,nptrue,flagimgnow)
         implicit none
         include 'mpif.h'
         integer, intent(in) :: nptlc,nbeamln,ibinit,ibend,npttot,nptrue
+        integer, intent(in) :: flagimgnow
         double precision, intent (inout), dimension(9,nptlc) :: rays
         double precision, intent (in) :: dt,mass,chge,tg,totchrg,r0
         type (BeamLineElem), dimension(:), intent(in) :: beamelem
         double precision, dimension(:,:), intent(in) :: zbeamelem
         type (fielddata), dimension(:), intent(in) :: fldmap
         integer, dimension(:,:), intent(in) :: idrfile
-        double precision, dimension(9,npttot) :: ptstot
+        double precision, allocatable, dimension(:,:) :: sources,srcloc
+        double precision, dimension(4,nptlc) :: targets
+        double precision, dimension(nptlc) :: ex,ey,ez,bx,by,bz
+        integer, allocatable, dimension(:) :: recvcounts,displs
         integer :: n,i
         double precision :: t0
         double precision, dimension(4) :: pos
-        double precision, dimension(6) :: range, extfld,tmpfld
-        double precision :: qmcc,recpgamma,coefLz,&
+        double precision, dimension(6) :: extfld,tmpfld
+        double precision :: recpgamma,coefLz,&
                             umx,umy,umz,upx,upy,upz,tmp,a1,a2,a3,a4,s1,s2,&
-                            s3,ex,ey,ez,bx,by,bz,zz
+                            s3,zz,gam
         integer, dimension(Maxoverlap) :: idbeamln
         integer :: noverlap,nnn
-        double precision :: betajx,betajy,betajz,gammaj,rijx,rijy,&
-                            rijz,rij,rijx2,rijy2,rijz2,rij2
-        double precision :: tmp1,tmp2,tmp3,coefE
-        integer :: j,ierr,sixnpt,jstart,jend,myid,sgn,sixnpttot
-        double precision :: dev,frac,frac1,stepsize
-        double precision :: gambetz,betz,gamz
+        double precision :: coefE
+        integer :: ierr,myid,sgn,nproc,myoffset
+        logical :: image
 
         call starttime_Timer( t0 )
 
-        !print*,"kickp2pimage,r0:",r0
-
-        qmcc = chge/mass
-        coefLz = qmcc*Scxlt
         !//coeficients used in the calculation of E field
         !//coeficients of B field is coefE/c
         if(chge.gt.0.0) then
@@ -1816,32 +1813,65 @@
         endif
         coefE = 1.0d0/(4*Pi*Epsilon0*Scxlt*Scxlt)*sgn*totchrg/nptrue
 
-        !collect all particles from the other processors to the local processor.
-        sixnpt = nptlc*9
-        !sixnpttot = npttot*6
-        sixnpttot = nptlc*9
-        !print*,"before all gather in kick: ",sixnpt,nptlc,npttot
-        call MPI_ALLGATHER(rays,sixnpt,MPI_DOUBLE_PRECISION,ptstot,&
-             sixnpttot,MPI_DOUBLE_PRECISION,MPI_COMM_WORLD,ierr)
-        !print*,"after all gather in kick: ",sixnpt,nptlc,npttot
-
-        !get my processor ID.
         call MPI_COMM_RANK(MPI_COMM_WORLD,myid,ierr)
-!        print*,"coefLz: ",coefLz,qmcc,Scxlt,dt,tg
+        call MPI_COMM_SIZE(MPI_COMM_WORLD,nproc,ierr)
 
-! for the purpose of comparison with mesh Poisson solver
-!        gambetz = 0.0
-!        do n = 1, npttot
-!          gambetz = gambetz + ptstot(6,n)
-!        enddo
-!        gambetz = gambetz/npttot
-!        gamz = sqrt(1.0d0+gambetz**2)
-!        betz = gambetz/gamz
+        !//gather the particle counts on every rank, since ranks don't
+        !//necessarily hold the same number of particles (e.g. during
+        !//emission), then gather the source arrays with ALLGATHERV.
+        allocate(recvcounts(nproc),displs(nproc))
+        call MPI_ALLGATHER(nptlc,1,MPI_INTEGER,recvcounts,1,MPI_INTEGER,&
+             MPI_COMM_WORLD,ierr)
+        displs(1) = 0
+        do i = 2, nproc
+          displs(i) = displs(i-1) + recvcounts(i-1)
+        enddo
+        myoffset = displs(myid+1)
 
+        !//build the local source array: one entry per quantity
+        !//(x,y,z,betax,betay,betaz,gamma,emitted flag), with gamma and
+        !//beta computed once per particle rather than once per pair.
+        allocate(srcloc(8,nptlc))
+        do n = 1, nptlc
+          if(rays(5,n).gt.0.0) then
+            gam = sqrt(1.0d0+rays(2,n)**2+rays(4,n)**2+rays(6,n)**2)
+            srcloc(1,n) = rays(1,n)
+            srcloc(2,n) = rays(3,n)
+            srcloc(3,n) = rays(5,n)
+            srcloc(4,n) = rays(2,n)/gam
+            srcloc(5,n) = rays(4,n)/gam
+            srcloc(6,n) = rays(6,n)/gam
+            srcloc(7,n) = gam
+            srcloc(8,n) = 1.0d0
+            targets(1,n) = rays(1,n)
+            targets(2,n) = rays(3,n)
+            targets(3,n) = rays(5,n)
+            targets(4,n) = 1.0d0
+          else
+            srcloc(:,n) = 0.0d0
+            targets(:,n) = 0.0d0
+          endif
+        enddo
+
+        allocate(sources(8,npttot))
+        call MPI_ALLGATHERV(srcloc,8*nptlc,MPI_DOUBLE_PRECISION,&
+             sources,8*recvcounts,8*displs,MPI_DOUBLE_PRECISION,&
+             MPI_COMM_WORLD,ierr)
+        deallocate(srcloc)
+
+        !//compute the space-charge fields: follow Flagimg/zimage (passed
+        !//in as flagimgnow) rather than always including the image term,
+        !//and include each particle's own image (no j.ne.n exclusion).
+        image = (flagimgnow.eq.1)
+        call pt2ptFields(nptlc,targets,myoffset,npttot,sources,image,r0,&
+                          ex,ey,ez,bx,by,bz)
+        deallocate(sources,recvcounts,displs)
+
+        !//external fields and the kick: O(N), unchanged from before.
         idbeamln = 1
         do n = 1, nptlc
           if(rays(5,n).gt.0.0) then
- 
+
           !find which element the particle belongs to.
           zz = rays(5,n)*Scxlt
           !counter how many elements overlaped at given location
@@ -1851,409 +1881,179 @@
                 (zz.le.zbeamelem(2,i)) ) then
                noverlap = noverlap + 1
                idbeamln(noverlap) = i
-!               exit
             endif
           enddo
- 
+
           pos(1) = rays(1,n)*Scxlt
           pos(2) = rays(3,n)*Scxlt
           pos(3) = zz
           pos(4) = tg
           !get external field from all overlaped fields at one location
           extfld = 0.0
-!          print*,"noverlap: ",noverlap
           do nnn = 1, noverlap
             call getfldt_BeamLineElem(beamelem(idbeamln(nnn)),pos,&
             tmpfld,fldmap(idrfile(3,idbeamln(nnn))))
             extfld = extfld + tmpfld
-!            if(nnn.eq.2) then
-!              write(16,*)zz,tmpfld(4),tmpfld(5),tmpfld(6)
-!            endif
-          enddo
-!           !uniform Ez within 1 mm
-!           if( (pos(3).gt.0.0).and.(pos(3).le.1.0e-3)) then
-!             extfld(3) = -10.0e6 
-!           else
-!!             extfld(3) = -10.0e6*exp(-0.5d0*((pos(3)-1.0e-3)/1.0e-3)**2)
-!           endif
-!           dev = 1.0e-3/Scxlt - rays(5,n)
-!           recpgamma = 1.0d0/sqrt(1.0d0+rays(2,n)**2+rays(4,n)**2+rays(6,n)**2)
-!           stepsize = rays(6,n)*recpgamma*dt
-!           frac = 2*dev/stepsize !half step
-!           if(frac.gt.1.0d0) then !no need for correction
-!             extfld(3) = -10.0e6 
-!           else if(frac.le.0.0) then
-!             extfld(3) = 0.0
-!           else
-!             frac1 = dev/stepsize+0.5
-!             extfld(3) = -10.0e6*frac1 
-!           endif
-
-!          print*,"pos...",idbeamln,idrfile(3,idbeamln),pos
-!          extfld = 0.0
-!          ez = 1.0e6
-!          print*,pos(3),ex,ey,ez,bx,by,bz,pos(4)
-
-          ex = 0.0 
-          ey = 0.0
-          ez = 0.0
-          bx = 0.0
-          by = 0.0
-          bz = 0.0
-          !//we need some coefficients for Q/(4 pi epsilon0) and 1/C
-          !//find the contributions from 1 to j-1 particles of local ptcs.
-          !//space-charge of the beam itself
-          do j = 1, n-1
-            if(rays(5,j).gt.0.0) then
-
-            rijx = rays(1,n)-rays(1,j)
-            rijy = rays(3,n)-rays(3,j)
-            rijz = rays(5,n)-rays(5,j)
-            gammaj = sqrt(1+rays(2,j)**2+rays(4,j)**2+rays(6,j)**2) 
-            betajx = rays(2,j)/gammaj
-            betajy = rays(4,j)/gammaj
-            betajz = rays(6,j)/gammaj
-            ! for the purpose of comparison with mesh Poisson solver
-            !gammaj = gamz
-            !betajx = 0.0
-            !betajy = 0.0
-            !betajz = betz
-            tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1) 
-            rijx2 = rijx + tmp1*betajx
-            rijy2 = rijy + tmp1*betajy
-            rijz2 = rijz + tmp1*betajz
-            rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
-              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
-            if(rij2.gt.r0) then
-              tmp3 = rij2**3 
-            else
-              tmp3 = r0**3
-            endif
-              ex = ex + gammaj*(rijx2-tmp2*betajx)/tmp3 
-              ey = ey + gammaj*(rijy2-tmp2*betajy)/tmp3 
-              ez = ez + gammaj*(rijz2-tmp2*betajz)/tmp3 
-              bx = bx + gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
-              by = by + gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
-              bz = bz + gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
-            !  ex = ex + rijx2/tmp3
-            !  ey = ey + rijy2/tmp3
-            !  ex = ez + rijz2/tmp3
-
-            endif
           enddo
 
-          !//find the contributions from i+1 to nplocal particles.
-          do j = n+1,nptlc
-            if(rays(5,j).gt.0.0) then
-
-            rijx = rays(1,n)-rays(1,j)
-            rijy = rays(3,n)-rays(3,j)
-            rijz = rays(5,n)-rays(5,j)
-            gammaj = sqrt(1+rays(2,j)**2+rays(4,j)**2+rays(6,j)**2)
-            betajx = rays(2,j)/gammaj
-            betajy = rays(4,j)/gammaj
-            betajz = rays(6,j)/gammaj
-            ! for the purpose of comparison with mesh Poisson solver
-            !gammaj = gamz
-            !betajx = 0.0
-            !betajy = 0.0
-            !betajz = betz
-            tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
-            rijx2 = rijx + tmp1*betajx
-            rijy2 = rijy + tmp1*betajy
-            rijz2 = rijz + tmp1*betajz
-            rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
-              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
-            if(rij2.gt.r0) then
-              tmp3 = rij2**3
-            else
-              tmp3 = r0**3
-            endif
-              ex = ex + gammaj*(rijx2-tmp2*betajx)/tmp3
-              ey = ey + gammaj*(rijy2-tmp2*betajy)/tmp3
-              ez = ez + gammaj*(rijz2-tmp2*betajz)/tmp3
-              bx = bx + gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
-              by = by + gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
-              bz = bz + gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
-            !  ex = ex + rijx2/tmp3
-            !  ey = ey + rijy2/tmp3
-            !  ex = ez + rijz2/tmp3
-
-            endif
-          enddo
-
-          !//Image space-charge of the beam 
-          !//find the contributions from 1 to j-1 particles of local ptcs.
-          do j = 1, nptlc
-            if(rays(5,j).gt.0.0) then
-            if(j.ne.n) then
-
-            rijx = rays(1,n)-rays(1,j)
-            rijy = rays(3,n)-rays(3,j)
-            !due to image charge
-            rijz = rays(5,n)+rays(5,j)
-            gammaj = sqrt(1+rays(2,j)**2+rays(4,j)**2+rays(6,j)**2) 
-            betajx = rays(2,j)/gammaj
-            betajy = rays(4,j)/gammaj
-            !due to image charge
-            betajz = -rays(6,j)/gammaj
-            ! for the purpose of comparison with mesh Poisson solver
-            !gammaj = gamz
-            !betajx = 0.0
-            !betajy = 0.0
-            !betajz = -betz
-            tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1) 
-            rijx2 = rijx + tmp1*betajx
-            rijy2 = rijy + tmp1*betajy
-            rijz2 = rijz + tmp1*betajz
-            rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
-              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
-            if(rij2.gt.r0) then
-              tmp3 = rij2**3 
-            else
-              tmp3 = r0**3
-            endif
-              !due to image charge
-              ex = ex - gammaj*(rijx2-tmp2*betajx)/tmp3 
-              ey = ey - gammaj*(rijy2-tmp2*betajy)/tmp3 
-              ez = ez - gammaj*(rijz2-tmp2*betajz)/tmp3 
-              bx = bx - gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
-              by = by - gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
-              bz = bz - gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
-              !due to image charge
-            !  ex = ex - rijx2/tmp3
-            !  ey = ey - rijy2/tmp3
-            !  ex = ez - rijz2/tmp3
-
-            endif
-            endif
-          enddo
-
-          !//space charge from beam itself
-          !//find the contributions from the other processor particles.
-          jstart = 1
-          jend = myid*nptlc
-          do j = jstart,jend
-            if(ptstot(5,j).gt.0.0) then
-
-            rijx = rays(1,n)-ptstot(1,j)
-            rijy = rays(3,n)-ptstot(3,j)
-            rijz = rays(5,n)-ptstot(5,j)
-            gammaj = sqrt(1+ptstot(2,j)**2+ptstot(4,j)**2+ptstot(6,j)**2)
-            betajx = ptstot(2,j)/gammaj
-            betajy = ptstot(4,j)/gammaj
-            betajz = ptstot(6,j)/gammaj
-            ! for the purpose of comparison with mesh Poisson solver
-            !gammaj = gamz
-            !betajx = 0.0
-            !betajy = 0.0
-            !betajz = betz
-            tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
-            rijx2 = rijx + tmp1*betajx
-            rijy2 = rijy + tmp1*betajy
-            rijz2 = rijz + tmp1*betajz
-            rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
-              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
-            if(rij2.gt.r0) then
-              tmp3 = rij2**3
-            else
-              tmp3 = r0**3
-            endif
-              ex = ex + gammaj*(rijx2-tmp2*betajx)/tmp3
-              ey = ey + gammaj*(rijy2-tmp2*betajy)/tmp3
-              ez = ez + gammaj*(rijz2-tmp2*betajz)/tmp3
-              bx = bx + gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
-              by = by + gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
-              bz = bz + gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
-            !  ex = ex + rijx2/tmp3
-            !  ey = ey + rijy2/tmp3
-            !  ex = ez + rijz2/tmp3
-
-            endif
-          enddo
-
-          !//image space charge from beam
-          !//find the contributions from the other processor particles.
-          jstart = 1
-          jend = myid*nptlc
-          do j = jstart,jend
-            if(ptstot(5,j).gt.0.0) then
-
-            rijx = rays(1,n)-ptstot(1,j)
-            rijy = rays(3,n)-ptstot(3,j)
-            rijz = rays(5,n)+ptstot(5,j) !due to image charge
-            gammaj = sqrt(1+ptstot(2,j)**2+ptstot(4,j)**2+ptstot(6,j)**2)
-            betajx = ptstot(2,j)/gammaj
-            betajy = ptstot(4,j)/gammaj
-            betajz = -ptstot(6,j)/gammaj !image charge
-            ! for the purpose of comparison with mesh Poisson solver
-            !gammaj = gamz
-            !betajx = 0.0
-            !betajy = 0.0
-            !betajz = -betz
-            tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
-            rijx2 = rijx + tmp1*betajx
-            rijy2 = rijy + tmp1*betajy
-            rijz2 = rijz + tmp1*betajz
-            rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
-              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
-            if(rij2.gt.r0) then
-              tmp3 = rij2**3
-            else
-              tmp3 = r0**3
-            endif
-              !image charge
-              ex = ex - gammaj*(rijx2-tmp2*betajx)/tmp3
-              ey = ey - gammaj*(rijy2-tmp2*betajy)/tmp3
-              ez = ez - gammaj*(rijz2-tmp2*betajz)/tmp3
-              bx = bx - gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
-              by = by - gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
-              bz = bz - gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
-              !image charge
-            !  ex = ex - rijx2/tmp3
-            !  ey = ey - rijy2/tmp3
-            !  ex = ez - rijz2/tmp3
-
-            endif
-          enddo
-
-          !//space charge from beam itself
-          jstart =(myid+1)*nptlc+1 
-          jend = npttot
-          do j = jstart,jend
-            if(ptstot(5,j).gt.0.0) then
-
-            rijx = rays(1,n)-ptstot(1,j)
-            rijy = rays(3,n)-ptstot(3,j)
-            rijz = rays(5,n)-ptstot(5,j)
-            gammaj = sqrt(1+ptstot(2,j)**2+ptstot(4,j)**2+ptstot(6,j)**2)
-            betajx = ptstot(2,j)/gammaj
-            betajy = ptstot(4,j)/gammaj
-            betajz = ptstot(6,j)/gammaj
-            ! for the purpose of comparison with mesh Poisson solver
-            !gammaj = gamz
-            !betajx = 0.0
-            !betajy = 0.0
-            !betajz = betz
-            tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
-            rijx2 = rijx + tmp1*betajx
-            rijy2 = rijy + tmp1*betajy
-            rijz2 = rijz + tmp1*betajz
-            rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
-              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
-            if(rij2.gt.r0) then
-              tmp3 = rij2**3
-            else
-              tmp3 = r0**3
-            endif
-              ex = ex + gammaj*(rijx2-tmp2*betajx)/tmp3
-              ey = ey + gammaj*(rijy2-tmp2*betajy)/tmp3
-              ez = ez + gammaj*(rijz2-tmp2*betajz)/tmp3
-              bx = bx + gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
-              by = by + gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
-              bz = bz + gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
-            !  ex = ex + rijx2/tmp3
-            !  ey = ey + rijy2/tmp3
-            !  ex = ez + rijz2/tmp3
-
-            endif
-          enddo
-
-          !//image space charge from beam
-          jstart =(myid+1)*nptlc+1 
-          jend = npttot
-          do j = jstart,jend
-            if(ptstot(5,j).gt.0.0) then
-
-            rijx = rays(1,n)-ptstot(1,j)
-            rijy = rays(3,n)-ptstot(3,j)
-            rijz = rays(5,n)+ptstot(5,j) !image charge
-            gammaj = sqrt(1+ptstot(2,j)**2+ptstot(4,j)**2+ptstot(6,j)**2)
-            betajx = ptstot(2,j)/gammaj
-            betajy = ptstot(4,j)/gammaj
-            betajz = -ptstot(6,j)/gammaj !image charge
-            ! for the purpose of comparison with mesh Poisson solver
-            !gammaj = gamz
-            !betajx = 0.0
-            !betajy = 0.0
-            !betajz = -betz
-            tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
-            rijx2 = rijx + tmp1*betajx
-            rijy2 = rijy + tmp1*betajy
-            rijz2 = rijz + tmp1*betajz
-            rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
-              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
-            if(rij2.gt.r0) then
-              tmp3 = rij2**3
-            else
-              tmp3 = r0**3
-            endif
-              ex = ex - gammaj*(rijx2-tmp2*betajx)/tmp3
-              ey = ey - gammaj*(rijy2-tmp2*betajy)/tmp3
-              ez = ez - gammaj*(rijz2-tmp2*betajz)/tmp3
-              bx = bx - gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
-              by = by - gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
-              bz = bz - gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
-            !  ex = ex - rijx2/tmp3
-            !  ey = ey - rijy2/tmp3
-            !  ex = ez - rijz2/tmp3
-
-            endif
-          enddo
-
-!          ex = extfld(1)
-!          ey = extfld(2)
-!          ez = extfld(3)
-!          bx = extfld(4)
-!          by = extfld(5)
-!          bz = extfld(6)
-          ex = coefE*ex+extfld(1)
-          ey = coefE*ey+extfld(2)
-          ez = coefE*ez+extfld(3)
-          bx = coefE*bx/Clight+extfld(4)
-          by = coefE*by/Clight+extfld(5)
-          bz = coefE*bz/Clight+extfld(6)
-!          bx = extfld(4)
-!          by = extfld(5)
-!          bz = extfld(6)
+          ex(n) = coefE*ex(n)+extfld(1)
+          ey(n) = coefE*ey(n)+extfld(2)
+          ez(n) = coefE*ez(n)+extfld(3)
+          bx(n) = coefE*bx(n)/Clight+extfld(4)
+          by(n) = coefE*by(n)/Clight+extfld(5)
+          bz(n) = coefE*bz(n)/Clight+extfld(6)
 
           coefLz = rays(7,n)*Scxlt
           !//advance the momenta of particles using implicit central
           !//difference scheme from Birdall and Longdon's book.
-          umx = rays(2,n) + coefLz*ex*0.5d0*dt
-          umy = rays(4,n) + coefLz*ey*0.5d0*dt
-          umz = rays(6,n) + coefLz*ez*0.5d0*dt
+          umx = rays(2,n) + coefLz*ex(n)*0.5d0*dt
+          umy = rays(4,n) + coefLz*ey(n)*0.5d0*dt
+          umz = rays(6,n) + coefLz*ez(n)*0.5d0*dt
           recpgamma = 1.0d0/sqrt(1.0d0+umx*umx+umy*umy+umz*umz)
           tmp = 0.5d0*Clight*dt*recpgamma*coefLz
-          a1 = tmp*bx
-          a2 = tmp*by
-          a3 = tmp*bz
+          a1 = tmp*bx(n)
+          a2 = tmp*by(n)
+          a3 = tmp*bz(n)
           a4 = 1.0d0+a1*a1+a2*a2+a3*a3
-          s1 = umx + tmp*(umy*bz-umz*by)
-          s2 = umy - tmp*(umx*bz-umz*bx)
-          s3 = umz + tmp*(umx*by-umy*bx)
+          s1 = umx + tmp*(umy*bz(n)-umz*by(n))
+          s2 = umy - tmp*(umx*bz(n)-umz*bx(n))
+          s3 = umz + tmp*(umx*by(n)-umy*bx(n))
           upx = ((1.0d0+a1*a1)*s1+(a1*a2+a3)*s2+(a1*a3-a2)*s3)/a4
           upy = ((a1*a2-a3)*s1+(1.0d0+a2*a2)*s2+(a2*a3+a1)*s3)/a4
           upz = ((a1*a3+a2)*s1+(a2*a3-a1)*s2+(1.0d0+a3*a3)*s3)/a4
-          rays(2,n) = upx + coefLz*ex*0.5d0*dt
-          rays(4,n) = upy + coefLz*ey*0.5d0*dt
-          rays(6,n) = upz + coefLz*ez*0.5d0*dt
+          rays(2,n) = upx + coefLz*ex(n)*0.5d0*dt
+          rays(4,n) = upy + coefLz*ey(n)*0.5d0*dt
+          rays(6,n) = upz + coefLz*ez(n)*0.5d0*dt
 
           endif
         enddo
-!        print*,"rays6: ",rays(6,1)
-
-       
-        !//Here, Charge is in unit of electron integer, 
-        !//Mass is in the unit of eV. 
-        !//coeficients for 1/E0, the coeficients for 1/B0 is just coefE0/c
-        !//coeficients for the Lorents force 
-
-        !print*,myid,nptlc,npttot
 
         t_ntrslo = t_ntrslo + elapsedtime_Timer( t0 )
 
         end subroutine kickpt2ptImg_BeamBunch
+
+
+        !--------------------------------------------------------------------------------------
+        !> @brief
+        !> Point-to-point space-charge fields (direct term plus, optionally,
+        !> the image term), split out of kickpt2ptImg_BeamBunch so the pair
+        !> loop can be ported to a GPU without the external-field/kick code.
+        !> @param[in] nptlc number of local target particles
+        !> @param[in] targets(4,nptlc): x,y,z,emitted-flag of local particles
+        !> @param[in] myoffset number of particles on lower-rank processes,
+        !>            so local target n has global index myoffset+n
+        !> @param[in] npttot total number of particles (size of sources)
+        !> @param[in] sources(8,npttot): x,y,z,betax,betay,betaz,gamma,
+        !>            emitted-flag of every particle, gathered from all ranks
+        !> @param[in] image whether to add the image term (Flagimg and
+        !>            before zimage); each particle then also feels its own
+        !>            image (no self-exclusion in the image term)
+        !> @param[in] r0 close-encounter cutoff radius
+        !> @param[out] ex,ey,ez,bx,by,bz(nptlc): fields at the local targets,
+        !>            not yet scaled by coefE or combined with external fields
+        !--------------------------------------------------------------------------------------
+        subroutine pt2ptFields(nptlc,targets,myoffset,npttot,sources,&
+                                image,r0,ex,ey,ez,bx,by,bz)
+        implicit none
+        integer, intent(in) :: nptlc,npttot,myoffset
+        double precision, dimension(4,nptlc), intent(in) :: targets
+        double precision, dimension(8,npttot), intent(in) :: sources
+        logical, intent(in) :: image
+        double precision, intent(in) :: r0
+        double precision, dimension(nptlc), intent(out) :: ex,ey,ez,bx,by,bz
+        integer :: n,j,gidx
+        double precision :: rijx,rijy,rijz,rijx2,rijy2,rijz2,rij2
+        double precision :: betajx,betajy,betajz,gammaj,tmp1,tmp2,tmp3
+        double precision :: sumex,sumey,sumez,sumbx,sumby,sumbz
+
+        do n = 1, nptlc
+          ex(n) = 0.0d0
+          ey(n) = 0.0d0
+          ez(n) = 0.0d0
+          bx(n) = 0.0d0
+          by(n) = 0.0d0
+          bz(n) = 0.0d0
+          if(targets(4,n).le.0.0d0) cycle
+
+          gidx = myoffset + n
+          sumex = 0.0d0
+          sumey = 0.0d0
+          sumez = 0.0d0
+          sumbx = 0.0d0
+          sumby = 0.0d0
+          sumbz = 0.0d0
+
+          do j = 1, npttot
+            if(sources(8,j).le.0.0d0) cycle
+
+            gammaj = sources(7,j)
+
+            !//space charge of the beam itself; skip the particle's own
+            !//direct (non-image) term.
+            if(j.ne.gidx) then
+              betajx = sources(4,j)
+              betajy = sources(5,j)
+              betajz = sources(6,j)
+              rijx = targets(1,n)-sources(1,j)
+              rijy = targets(2,n)-sources(2,j)
+              rijz = targets(3,n)-sources(3,j)
+              tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
+              rijx2 = rijx + tmp1*betajx
+              rijy2 = rijy + tmp1*betajy
+              rijz2 = rijz + tmp1*betajz
+              rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
+              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
+              if(rij2.gt.r0) then
+                tmp3 = rij2**3
+              else
+                tmp3 = r0**3
+              endif
+              sumex = sumex + gammaj*(rijx2-tmp2*betajx)/tmp3
+              sumey = sumey + gammaj*(rijy2-tmp2*betajy)/tmp3
+              sumez = sumez + gammaj*(rijz2-tmp2*betajz)/tmp3
+              sumbx = sumbx + gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
+              sumby = sumby + gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
+              sumbz = sumbz + gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
+            endif
+
+            !//image space charge of the beam; every particle, including
+            !//itself (gidx), feels its image while image is on.
+            if(image) then
+              betajx =  sources(4,j)
+              betajy =  sources(5,j)
+              betajz = -sources(6,j)
+              rijx = targets(1,n)-sources(1,j)
+              rijy = targets(2,n)-sources(2,j)
+              rijz = targets(3,n)+sources(3,j)
+              tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
+              rijx2 = rijx + tmp1*betajx
+              rijy2 = rijy + tmp1*betajy
+              rijz2 = rijz + tmp1*betajz
+              rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
+              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
+              if(rij2.gt.r0) then
+                tmp3 = rij2**3
+              else
+                tmp3 = r0**3
+              endif
+              sumex = sumex - gammaj*(rijx2-tmp2*betajx)/tmp3
+              sumey = sumey - gammaj*(rijy2-tmp2*betajy)/tmp3
+              sumez = sumez - gammaj*(rijz2-tmp2*betajz)/tmp3
+              sumbx = sumbx - gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
+              sumby = sumby - gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
+              sumbz = sumbz - gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
+            endif
+          enddo
+
+          ex(n) = sumex
+          ey(n) = sumey
+          ez(n) = sumez
+          bx(n) = sumbx
+          by(n) = sumby
+          bz(n) = sumbz
+        enddo
+
+        end subroutine pt2ptFields
 
         !rotate to the particle coordinates to local beam coordinate of "ptref".
         !Here, "ptref" coordinate has a rotation "theta" in x-z plane with
