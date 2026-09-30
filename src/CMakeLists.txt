@@ -1,5 +1,5 @@
 # set minimum cmake version
-cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
 
 # Uncomment for VERBOSE Makefiles. Useful for debugging.
 #set(CMAKE_VERBOSE_MAKEFILE ON)
@@ -14,6 +14,7 @@ project(ImpactT LANGUAGES Fortran)
 
 option(USE_MPI "Activate MPI build" OFF)
 option(USE_FFTW "Use FFTW3 for FFTs instead of the bundled FFTPACK 5.1" OFF)
+option(USE_GPU "Build with NVIDIA OpenACC/CUDA Fortran GPU offload (requires nvfortran)" OFF)
 
 list(APPEND _sources
     DataStruct/NumConst.f90
@@ -57,7 +58,21 @@ set(OUTPUT_NAME "ImpactTexe")
 if(USE_MPI)
     set(OUTPUT_NAME "ImpactTexe-mpi")
 endif()
+if(USE_GPU)
+    set(OUTPUT_NAME "${OUTPUT_NAME}-gpu")
+endif()
 add_executable(${OUTPUT_NAME})
+
+if(USE_GPU)
+    if(NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+        message(FATAL_ERROR "USE_GPU=ON requires the NVIDIA HPC SDK Fortran "
+            "compiler (nvfortran), got CMAKE_Fortran_COMPILER_ID="
+            "${CMAKE_Fortran_COMPILER_ID}")
+    endif()
+    target_compile_definitions(${OUTPUT_NAME} PUBLIC USE_GPU)
+    target_compile_options(${OUTPUT_NAME} PRIVATE -acc=gpu -gpu=cc90 -cuda)
+    target_link_options(${OUTPUT_NAME} PRIVATE -acc=gpu -gpu=cc90 -cuda -cudalib=cufft)
+endif()
 
 if(USE_MPI)
     find_package(MPI REQUIRED)

@@ -29,3 +29,28 @@ Checks (see IMPACTT_GPU_PORT_PLAN.md, step A1):
 - **C**: sanity check that the image flag actually changes the result.
 - **D**: a single particle at rest at height z matches the analytic
   self-image field, e/(4 pi eps0 (2z)^2), to machine precision.
+
+# Phase 0 test harness: compare_runs.py
+
+`compare_runs.py` runs the same IMPACT-T input with two executables and
+compares fort.18/24/25/26 (run-level check) and the `showtime_Timer`
+timers printed to stdout (needs the MPI build, even at 1 rank -- the
+serial build's timers always read 0). Used for:
+
+- the `nvfortran` CPU-only build check against `gfortran` (0.2): looser
+  tolerance (`--rtol`, default 1e-6), since different compilers reorder
+  floating-point sums;
+- CPU-vs-GPU checks from A2 onward: tight tolerance (`--rtol 1e-12`),
+  since the plan expects near-bit-identical results there.
+
+```
+python3 compare_runs.py --ref /path/to/ImpactTexe-mpi \
+    --cand /path/to/ImpactTexe-mpi-gpu \
+    --input-dir /path/to/impact_t_files \
+    --workdir /tmp/cmp --mpi --nproc 1 --rtol 1e-12
+```
+
+It also has a `compare_fields()` helper for the field-level check (dump
+E/B at the particles for one step, under an env var) described in the
+plan's 0.3 -- that dump doesn't exist yet; A2 should add it and wire up
+`--field-dump-env`/`--field-dump-file` options here.
