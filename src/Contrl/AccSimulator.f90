@@ -700,8 +700,16 @@
         integer :: iizz1,flagcsr
         double precision :: eeff,ssll,r0bend,kkcsr,Bybend
         !//for N body
-        integer  :: nplocal0,np0
         integer :: itsz
+        !//switching the space-charge solver between mesh and point-to-point
+        !//(N-body) by z: -15 switches to point-to-point at its z (V4), with
+        !//its own cutoff radius r0 (V3); -19 switches back to the mesh
+        !//solver at its z (V3). Switch points are sorted by z (any number of
+        !//times, either direction) and applied with the same crossing test
+        !//as tszstart.
+        integer :: nsw,iswpt
+        double precision, dimension(101) :: swz,swr0
+        integer, dimension(101) :: swflag
         real*8 :: bendlen,zz1,zz2,zwkmin,poscent,zfmin,zfmax,coeftol
         integer :: ldsg,nlsg,nrsg,npsg,msg,ncoefreal,iz
         !//for readin wake function
@@ -887,14 +895,19 @@
         tmap = 1.0e12
         theat = 1.0e12
         tzrot = 1.0e12
+        swz = 1.0e12
+        swr0 = 0.0d0
+        swflag = 0
 
         izrot = 0
         iheat = 0
-        imap = 0       
+        imap = 0
         islout = 0
         iout = 0
         itsz = 0
         itspc = 0
+        nsw = 0
+        iswpt = 0
         nwk = 0
         isteer = 0
         icol = 0
@@ -1097,10 +1110,15 @@
           endif
 !!! end DWA
 
-          if(bitype.eq.(-15)) then !turn on pt2pt for SC calculation
-            call getparam_BeamLineElem(Blnelem(i),3,r0tmp)
-            flagpt2pt = 1
-            r0 = r0tmp/Scxlt
+          if(bitype.eq.(-15)) then !switch to pt2pt (N-body) SC at z (V4)
+            nsw = nsw + 1
+            if(nsw.gt.100) then
+              print*,"The maximum # of N-body/mesh solver switches is 100!!!"
+              nsw = 100
+            endif
+            call getparam_BeamLineElem(Blnelem(i),3,swr0(nsw))
+            call getparam_BeamLineElem(Blnelem(i),4,swz(nsw))
+            swflag(nsw) = 1 !1: switch to pt2pt (N-body)
           endif
 
           if(bitype.eq.(-16)) then !instant gamma beta_z heating
@@ -1122,10 +1140,38 @@
             endif
           endif
 
+          if(bitype.eq.(-19)) then !switch back to the mesh solver at z (V3)
+            nsw = nsw + 1
+            if(nsw.gt.100) then
+              print*,"The maximum # of N-body/mesh solver switches is 100!!!"
+              nsw = 100
+            endif
+            call getparam_BeamLineElem(Blnelem(i),3,swz(nsw))
+            swflag(nsw) = 0 !0: switch to the mesh solver
+          endif
+
           if(bitype.eq.(-99)) then
             call getparam_BeamLineElem(Blnelem(i),3,tstop)
             print*,"tstop: ",tstop
           endif
+        enddo
+
+        !sort the N-body/mesh switch points by z (insertion sort; nsw <= 100)
+        do iizz1 = 2, nsw
+          tmpwk = swz(iizz1)
+          tmpcur = swr0(iizz1)
+          itmp = swflag(iizz1)
+          iizz = iizz1 - 1
+          do while(iizz.ge.1)
+            if(swz(iizz).le.tmpwk) exit
+            swz(iizz+1) = swz(iizz)
+            swr0(iizz+1) = swr0(iizz)
+            swflag(iizz+1) = swflag(iizz)
+            iizz = iizz - 1
+          enddo
+          swz(iizz+1) = tmpwk
+          swr0(iizz+1) = tmpcur
+          swflag(iizz+1) = itmp
         enddo
 
         dtless = dtlessend !dimensionless time step size.
@@ -1152,8 +1198,6 @@
           Nplocal(ib) = Ebunch(ib)%Nptlocal
           Np(ib) = Ebunch(ib)%Npt
         enddo
-        nplocal0 = Nplocal(1)
-        np0 = Np(1)
         if(Flagdiag.eq.1) then
           !output the moments from the average of all bunches at fixed t.
           call diagnostic1avg_Output(t,Ebunch,Nbunch)
@@ -1335,6 +1379,22 @@
           endif
 
 !          print*,"flatinteg: ",flaginteg,tinteg(itsz),dtless,itsz0
+
+          !switch the space-charge solver between mesh and point-to-point
+          !(N-body) at swz, sorted by z (from -15/-19 elements)
+          if(distance.le.swz(iswpt+1) .and. (distance+dzz).ge.swz(iswpt+1)) then
+            iswpt = iswpt + 1
+            flagpt2pt = swflag(iswpt)
+            if(flagpt2pt.eq.1) r0 = swr0(iswpt)
+            if(myid.eq.0) then
+              if(flagpt2pt.eq.1) then
+                print*,"space charge: switch to point-to-point (N-body) at z=",&
+                       distance," r0=",r0
+              else
+                print*,"space charge: switch to the mesh solver at z=",distance
+              endif
+            endif
+          endif
 
           !change charge space at tspcstart
           !if(t.le.tspcstart(itspc+1) .and. (t+dtless*Dt).ge.tspcstart(itspc+1)) then
@@ -2128,10 +2188,13 @@
               !//test the mesh solver uses, rather than always being on.
               flagimgnow = FlagImage
               if(distance.gt.zimage) flagimgnow = 0
-              call kickpt2ptImg_BeamBunch(nplocal0,Ebunch(ib)%Pts1,t,&
+              !//Nplocal(ib)/Np(ib), not stale counts from before the time
+              !//loop: mesh-phase load balancing (ptsmv2_Ptclmger) can move
+              !//particles between ranks before a later switch into pt2pt.
+              call kickpt2ptImg_BeamBunch(Nplocal(ib),Ebunch(ib)%Pts1,t,&
                  Ebunch(ib)%Charge,&
                  Ebunch(ib)%Mass,dtless,Blnelem,zBlnelem,idrfile,Nblem,&
-                 ibinit,ibend,fldmp,totchrg,r0,np0,Np(ib),flagimgnow)
+                 ibinit,ibend,fldmp,totchrg,r0,Np(ib),Np(ib),flagimgnow)
             enddo
 
             endif
