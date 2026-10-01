@@ -68,6 +68,26 @@ Prints the measured rate and, assuming it holds at scale, the projected
 per-step and whole-run (2500-step) time at the plan's 6.24M-particle
 target case.
 
+# A2 GPU profiling: bench_pt2ptfields_prof
+
+`bench_pt2ptfields_prof.f90` is a smaller-N (100k particles), one-rep
+variant of `bench_pt2ptfields.f90`, for capturing an `ncu` (Nsight
+Compute) profile of the `pt2ptFields` kernel without a full-metric-set
+capture taking forever. Link it against a `USE_GPU=ON` object set (same
+way as the other tests), then profile the timed call (the 2nd kernel
+launch; the 1st is an untimed warm-up) with e.g.:
+
+```
+ncu --launch-skip 1 --launch-count 1 \
+    --section SpeedOfLight --section SpeedOfLight_RooflineChart \
+    --section Occupancy --section WarpStateStats \
+    --section ComputeWorkloadAnalysis --section MemoryWorkloadAnalysis \
+    -f -o ncu_report mpirun -n 1 ./bench_pt2ptfields_prof
+ncu -i ncu_report.ncu-rep --page details
+```
+
+See IMPACTT_GPU_PORT_PLAN.md's A2 Progress notes for what this found.
+
 # Phase 0 test harness: compare_runs.py
 
 `compare_runs.py` runs the same IMPACT-T input with two executables and
