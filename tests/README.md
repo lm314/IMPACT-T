@@ -9,10 +9,10 @@ It is not part of the CMake build (it links against the compiled
 
 ```
 cd ../build-mpi
-OBJS=$(find CMakeFiles/ImpactTexe-mpi.dir -name "*.o" | \
-       grep -vE "Contrl/(main|AccSimulator|Input|Output)\.f90\.o")
-mpif90 -cpp -DUSE_MPI -fallow-argument-mismatch -I. \
-  -o ../tests/test_pt2ptfields ../tests/test_pt2ptfields.f90 $OBJS \
+find CMakeFiles/ImpactTexe-mpi.dir -name "*.o" | \
+  grep -vE "Contrl/(main|AccSimulator|Input|Output)\.f90\.o" > /tmp/objlist.txt
+cat /tmp/objlist.txt | xargs mpif90 -cpp -DUSE_MPI -fallow-argument-mismatch -I. \
+  -o ../tests/test_pt2ptfields ../tests/test_pt2ptfields.f90 \
   <fftw3 and MPI shared libraries, as printed by
    CMakeFiles/ImpactTexe-mpi.dir/link.txt>
 
@@ -20,6 +20,16 @@ cd ../tests
 mpirun -n 1 ./test_pt2ptfields
 mpirun -n 4 ./test_pt2ptfields
 ```
+
+(Build the object list to a file and pipe it through `xargs` rather than
+`$(find ...)` inline on the command line -- under zsh, an unquoted
+command substitution is passed as a single word, not one word per line,
+so the linker sees one mangled "filename" instead of ~30 object files.)
+
+For `USE_GPU=ON` (A2 onward), build `build-mpi-gpu` the same way (with
+`-DUSE_GPU=ON`, nvfortran) and link `test_pt2ptfields`/`bench_pt2ptfields`
+against *that* build's object list instead, on a node with a GPU, so the
+`!$acc` directives in `pt2ptFields` actually offload.
 
 Checks (see IMPACTT_GPU_PORT_PLAN.md, step A1):
 
@@ -29,6 +39,34 @@ Checks (see IMPACTT_GPU_PORT_PLAN.md, step A1):
 - **C**: sanity check that the image flag actually changes the result.
 - **D**: a single particle at rest at height z matches the analytic
   self-image field, e/(4 pi eps0 (2z)^2), to machine precision.
+
+For A2's GPU-vs-CPU field-level check, set `IMPACTT_FIELD_DUMP=<path>`
+(nproc=1 only) to also dump Check A's (image on) computed
+(ex,ey,ez,bx,by,bz), one row per particle, to that file. Build the same
+`test_pt2ptfields.f90` once against a `USE_GPU=ON` object set and run it
+on a GPU node, and once against a CPU-only (`USE_GPU=OFF`) object set,
+then diff the two dumps:
+
+```
+python3 compare_runs.py --diff-fields gpu_fields.txt cpu_fields.txt --rtol 1e-10
+```
+
+# A2 performance check: bench_pt2ptfields
+
+`bench_pt2ptfields.f90` measures pair evaluations/second for
+`pt2ptFields` at 1M particles, single rank, image charge on (2*N^2 pairs
+per call -- the direct term over all pairs but the particle's own, plus
+the image term over all pairs including the particle's own). Link it the
+same way as `test_pt2ptfields` above, against a `USE_GPU=ON` object set
+to measure one H100 or `USE_GPU=OFF` to measure one CPU core:
+
+```
+mpirun -n 1 ./bench_pt2ptfields
+```
+
+Prints the measured rate and, assuming it holds at scale, the projected
+per-step and whole-run (2500-step) time at the plan's 6.24M-particle
+target case.
 
 # Phase 0 test harness: compare_runs.py
 
@@ -50,7 +88,7 @@ python3 compare_runs.py --ref /path/to/ImpactTexe-mpi \
     --workdir /tmp/cmp --mpi --nproc 1 --rtol 1e-12
 ```
 
-It also has a `compare_fields()` helper for the field-level check (dump
-E/B at the particles for one step, under an env var) described in the
-plan's 0.3 -- that dump doesn't exist yet; A2 should add it and wire up
-`--field-dump-env`/`--field-dump-file` options here.
+It also has a `--diff-fields REF CAND` mode (A2) that skips the run-level
+check and just reports the max relative error between two
+(ex,ey,ez,bx,by,bz) dump files, e.g. `test_pt2ptfields`'s
+`IMPACTT_FIELD_DUMP` output -- see the A2 section above.

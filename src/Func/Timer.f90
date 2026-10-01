@@ -30,6 +30,7 @@
         double precision :: t_greenf
         double precision :: t_rhofas
         double precision :: t_ntrslo
+        double precision :: t_pt2ptfields
         double precision :: t_fft2dhpf
         double precision :: t_mfft_local1
         double precision :: t_field
@@ -64,6 +65,7 @@
         t_greenf = values
         t_rhofas = values
         t_ntrslo = values
+        t_pt2ptfields = values
         t_fft2dhpf = values
         t_mfft_local1 = values
         t_field = values
@@ -112,6 +114,7 @@
         call showtime_aux( "greenf",      t_greenf )
         call showtime_aux( "rhofas",      t_rhofas )
         call showtime_aux( "ntrslo",      t_ntrslo )
+        call showtime_aux( "pt2ptfields", t_pt2ptfields )
         call showtime_aux( "fft2dhpf",    t_fft2dhpf )
         call showtime_aux( "mfft_local1", t_mfft_local1 )
         call showtime_aux( "diag",        t_diag )

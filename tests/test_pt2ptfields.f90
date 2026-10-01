@@ -158,6 +158,14 @@ program test_pt2ptfields
           endif
         endif
 
+        !//A2 field-level check: dump Check A's (image on) computed fields,
+        !//one row per local particle, so the same binary built from a
+        !//GPU-enabled (OpenACC) object and a CPU-only object can be diffed
+        !//directly with compare_runs.py --diff-fields. Only at nproc=1,
+        !//since that's how the GPU-vs-CPU comparison is run (one rank,
+        !//one GPU). The env var names the output file.
+        if(nproc.eq.1) call dump_fields_if_requested()
+
         !//Check D: analytic self-image of a single particle at rest at
         !//height z: image field should be e/(4 pi eps0 (2z)^2) toward the
         !//cathode. pt2ptFields returns the raw (unscaled by coefE) sum, so
@@ -251,6 +259,20 @@ contains
         endif
 
         end subroutine ref_fields
+
+        subroutine dump_fields_if_requested()
+        implicit none
+        character(len=4096) :: outfile
+        integer :: outlen, outstat, u, n
+        call get_environment_variable('IMPACTT_FIELD_DUMP', outfile, outlen, outstat)
+        if(outstat.ne.0) return
+        open(newunit=u, file=trim(outfile(1:outlen)), status='replace', action='write')
+        do n = 1, nptlc
+          write(u,'(6ES24.16)') ex(n),ey(n),ez(n),bx(n),by(n),bz(n)
+        enddo
+        close(u)
+        print '(A,A)','field dump written to ', trim(outfile(1:outlen))
+        end subroutine dump_fields_if_requested
 
         subroutine check_single_particle_image()
         implicit none

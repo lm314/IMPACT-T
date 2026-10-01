@@ -125,10 +125,20 @@ def compare_fields(ref_file, cand_file):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ref", required=True, help="reference executable")
-    ap.add_argument("--cand", required=True, help="candidate executable")
-    ap.add_argument("--input-dir", required=True, help="dir with ImpactT.in + field data")
-    ap.add_argument("--workdir", required=True, help="scratch dir for both runs")
+    ap.add_argument("--diff-fields", nargs=2, metavar=("REF_FILE", "CAND_FILE"),
+                     help="skip the run-level check; just report the max "
+                          "relative error between two (ex,ey,ez,bx,by,bz) "
+                          "dump files (e.g. from test_pt2ptfields' "
+                          "IMPACTT_FIELD_DUMP hook) and exit")
+    ap.add_argument("--rtol", type=float, default=1e-6,
+                     help="max relative error to call it a pass (default 1e-6; "
+                          "cross-compiler runs reorder sums, so this is looser "
+                          "than the ~1e-12 the plan expects for GPU-vs-CPU "
+                          "with the same compiler)")
+    ap.add_argument("--ref", help="reference executable")
+    ap.add_argument("--cand", help="candidate executable")
+    ap.add_argument("--input-dir", help="dir with ImpactT.in + field data")
+    ap.add_argument("--workdir", help="scratch dir for both runs")
     ap.add_argument("--mpi", action="store_true", help="launch with mpirun")
     ap.add_argument("--nproc", type=int, default=1)
     ap.add_argument("--ref-mpirun", default="mpirun",
@@ -136,12 +146,18 @@ def main():
                           "against different MPI installs)")
     ap.add_argument("--cand-mpirun", default="mpirun",
                      help="mpirun to launch --cand with")
-    ap.add_argument("--rtol", type=float, default=1e-6,
-                     help="max relative error to call it a pass (default 1e-6; "
-                          "cross-compiler runs reorder sums, so this is looser "
-                          "than the ~1e-12 the plan expects for GPU-vs-CPU "
-                          "with the same compiler)")
     args = ap.parse_args()
+
+    if args.diff_fields:
+        ref_file, cand_file = args.diff_fields
+        max_rel = compare_fields(ref_file, cand_file)
+        status = "OK" if max_rel <= args.rtol else "FAIL"
+        print(f"fields: max relative error {max_rel:.3e} [{status}]")
+        sys.exit(0 if max_rel <= args.rtol else 1)
+
+    if not (args.ref and args.cand and args.input_dir and args.workdir):
+        ap.error("--ref, --cand, --input-dir and --workdir are required "
+                  "unless --diff-fields is given")
 
     workdir = pathlib.Path(args.workdir)
     ref_dir, ref_wall, ref_out = run_case(

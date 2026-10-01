@@ -1790,7 +1790,7 @@
         double precision, dimension(nptlc) :: ex,ey,ez,bx,by,bz
         integer, allocatable, dimension(:) :: recvcounts,displs
         integer :: n,i
-        double precision :: t0
+        double precision :: t0,t1
         double precision, dimension(4) :: pos
         double precision, dimension(6) :: extfld,tmpfld
         double precision :: recpgamma,coefLz,&
@@ -1863,8 +1863,10 @@
         !//in as flagimgnow) rather than always including the image term,
         !//and include each particle's own image (no j.ne.n exclusion).
         image = (flagimgnow.eq.1)
+        call starttime_Timer(t1)
         call pt2ptFields(nptlc,targets,myoffset,npttot,sources,image,r0,&
                           ex,ey,ez,bx,by,bz)
+        t_pt2ptfields = t_pt2ptfields + elapsedtime_Timer(t1)
         deallocate(sources,recvcounts,displs)
 
         !//external fields and the kick: O(N), unchanged from before.
@@ -1962,20 +1964,25 @@
         double precision, intent(in) :: r0
         double precision, dimension(nptlc), intent(out) :: ex,ey,ez,bx,by,bz
         integer :: n,j,gidx
-        double precision :: rijx,rijy,rijz,rijx2,rijy2,rijz2,rij2
-        double precision :: betajx,betajy,betajz,gammaj,tmp1,tmp2,tmp3
+        double precision :: rijx,rijy,rijz,rijx2,rijy2,rijz2,rij2sq,rinv,rinv3
+        double precision :: betajx,betajy,betajz,gammaj,tmp1,tmp2
         double precision :: sumex,sumey,sumez,sumbx,sumby,sumbz
+        double precision :: tx,ty,tz,r0sq,r0inv
+        logical :: valid
 
+        !//r0 enters every pair only through 1/r0 and 1/r0^2, so precompute
+        !//both once instead of a division (r0sq compare) and a cube (r0**3)
+        !//inside the pair loop.
+        r0sq = r0*r0
+        r0inv = 1.0d0/r0
+
+        !$acc data copyin(targets,sources) copyout(ex,ey,ez,bx,by,bz)
+        !$acc parallel loop gang vector &
+        !$acc   private(j,gidx,tx,ty,tz,valid,sumex,sumey,sumez,sumbx,sumby, &
+        !$acc           sumbz,rijx,rijy,rijz,rijx2,rijy2,rijz2,rij2sq,rinv, &
+        !$acc           rinv3,betajx,betajy,betajz,gammaj,tmp1,tmp2)
         do n = 1, nptlc
-          ex(n) = 0.0d0
-          ey(n) = 0.0d0
-          ez(n) = 0.0d0
-          bx(n) = 0.0d0
-          by(n) = 0.0d0
-          bz(n) = 0.0d0
-          if(targets(4,n).le.0.0d0) cycle
-
-          gidx = myoffset + n
+          valid = targets(4,n).gt.0.0d0
           sumex = 0.0d0
           sumey = 0.0d0
           sumez = 0.0d0
@@ -1983,67 +1990,78 @@
           sumby = 0.0d0
           sumbz = 0.0d0
 
-          do j = 1, npttot
-            if(sources(8,j).le.0.0d0) cycle
+          if(valid) then
+            gidx = myoffset + n
+            tx = targets(1,n)
+            ty = targets(2,n)
+            tz = targets(3,n)
 
-            gammaj = sources(7,j)
+            !$acc loop seq
+            do j = 1, npttot
+              if(sources(8,j).gt.0.0d0) then
 
-            !//space charge of the beam itself; skip the particle's own
-            !//direct (non-image) term.
-            if(j.ne.gidx) then
-              betajx = sources(4,j)
-              betajy = sources(5,j)
-              betajz = sources(6,j)
-              rijx = targets(1,n)-sources(1,j)
-              rijy = targets(2,n)-sources(2,j)
-              rijz = targets(3,n)-sources(3,j)
-              tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
-              rijx2 = rijx + tmp1*betajx
-              rijy2 = rijy + tmp1*betajy
-              rijz2 = rijz + tmp1*betajz
-              rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
-              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
-              if(rij2.gt.r0) then
-                tmp3 = rij2**3
-              else
-                tmp3 = r0**3
+                gammaj = sources(7,j)
+
+                !//space charge of the beam itself; skip the particle's own
+                !//direct (non-image) term.
+                if(j.ne.gidx) then
+                  betajx = sources(4,j)
+                  betajy = sources(5,j)
+                  betajz = sources(6,j)
+                  rijx = tx-sources(1,j)
+                  rijy = ty-sources(2,j)
+                  rijz = tz-sources(3,j)
+                  tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
+                  rijx2 = rijx + tmp1*betajx
+                  rijy2 = rijy + tmp1*betajy
+                  rijz2 = rijz + tmp1*betajz
+                  rij2sq = rijx2**2+rijy2**2+rijz2**2
+                  tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
+                  if(rij2sq.gt.r0sq) then
+                    rinv = 1.0d0/sqrt(rij2sq)
+                  else
+                    rinv = r0inv
+                  endif
+                  rinv3 = rinv*rinv*rinv
+                  sumex = sumex + gammaj*(rijx2-tmp2*betajx)*rinv3
+                  sumey = sumey + gammaj*(rijy2-tmp2*betajy)*rinv3
+                  sumez = sumez + gammaj*(rijz2-tmp2*betajz)*rinv3
+                  sumbx = sumbx + gammaj*(betajy*rijz2-betajz*rijy2)*rinv3
+                  sumby = sumby + gammaj*(betajz*rijx2-betajx*rijz2)*rinv3
+                  sumbz = sumbz + gammaj*(betajx*rijy2-betajy*rijx2)*rinv3
+                endif
+
+                !//image space charge of the beam; every particle, including
+                !//itself (gidx), feels its image while image is on.
+                if(image) then
+                  betajx =  sources(4,j)
+                  betajy =  sources(5,j)
+                  betajz = -sources(6,j)
+                  rijx = tx-sources(1,j)
+                  rijy = ty-sources(2,j)
+                  rijz = tz+sources(3,j)
+                  tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
+                  rijx2 = rijx + tmp1*betajx
+                  rijy2 = rijy + tmp1*betajy
+                  rijz2 = rijz + tmp1*betajz
+                  rij2sq = rijx2**2+rijy2**2+rijz2**2
+                  tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
+                  if(rij2sq.gt.r0sq) then
+                    rinv = 1.0d0/sqrt(rij2sq)
+                  else
+                    rinv = r0inv
+                  endif
+                  rinv3 = rinv*rinv*rinv
+                  sumex = sumex - gammaj*(rijx2-tmp2*betajx)*rinv3
+                  sumey = sumey - gammaj*(rijy2-tmp2*betajy)*rinv3
+                  sumez = sumez - gammaj*(rijz2-tmp2*betajz)*rinv3
+                  sumbx = sumbx - gammaj*(betajy*rijz2-betajz*rijy2)*rinv3
+                  sumby = sumby - gammaj*(betajz*rijx2-betajx*rijz2)*rinv3
+                  sumbz = sumbz - gammaj*(betajx*rijy2-betajy*rijx2)*rinv3
+                endif
               endif
-              sumex = sumex + gammaj*(rijx2-tmp2*betajx)/tmp3
-              sumey = sumey + gammaj*(rijy2-tmp2*betajy)/tmp3
-              sumez = sumez + gammaj*(rijz2-tmp2*betajz)/tmp3
-              sumbx = sumbx + gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
-              sumby = sumby + gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
-              sumbz = sumbz + gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
-            endif
-
-            !//image space charge of the beam; every particle, including
-            !//itself (gidx), feels its image while image is on.
-            if(image) then
-              betajx =  sources(4,j)
-              betajy =  sources(5,j)
-              betajz = -sources(6,j)
-              rijx = targets(1,n)-sources(1,j)
-              rijy = targets(2,n)-sources(2,j)
-              rijz = targets(3,n)+sources(3,j)
-              tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
-              rijx2 = rijx + tmp1*betajx
-              rijy2 = rijy + tmp1*betajy
-              rijz2 = rijz + tmp1*betajz
-              rij2 = sqrt(rijx2**2+rijy2**2+rijz2**2)
-              tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
-              if(rij2.gt.r0) then
-                tmp3 = rij2**3
-              else
-                tmp3 = r0**3
-              endif
-              sumex = sumex - gammaj*(rijx2-tmp2*betajx)/tmp3
-              sumey = sumey - gammaj*(rijy2-tmp2*betajy)/tmp3
-              sumez = sumez - gammaj*(rijz2-tmp2*betajz)/tmp3
-              sumbx = sumbx - gammaj*(betajy*rijz2-betajz*rijy2)/tmp3
-              sumby = sumby - gammaj*(betajz*rijx2-betajx*rijz2)/tmp3
-              sumbz = sumbz - gammaj*(betajx*rijy2-betajy*rijx2)/tmp3
-            endif
-          enddo
+            enddo
+          endif
 
           ex(n) = sumex
           ey(n) = sumey
@@ -2052,6 +2070,8 @@
           by(n) = sumby
           bz(n) = sumbz
         enddo
+        !$acc end parallel loop
+        !$acc end data
 
         end subroutine pt2ptFields
 
