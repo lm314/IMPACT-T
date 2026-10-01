@@ -70,7 +70,7 @@ program test_pt2ptfields
         enddo
         myoffset = displs(myid+1)
 
-        allocate(srcloc(8,nptlc),targets(4,nptlc))
+        allocate(srcloc(10,nptlc),targets(4,nptlc))
         do n = 1, nptlc
           gam = sqrt(1.0d0+rays(2,n)**2+rays(4,n)**2+rays(6,n)**2)
           srcloc(1,n) = rays(1,n)
@@ -81,15 +81,17 @@ program test_pt2ptfields
           srcloc(6,n) = rays(6,n)/gam
           srcloc(7,n) = gam
           srcloc(8,n) = 1.0d0
+          srcloc(9,n) = gam*gam/(gam+1.0d0)
+          srcloc(10,n) = gam/(gam+1.0d0)
           targets(1,n) = rays(1,n)
           targets(2,n) = rays(3,n)
           targets(3,n) = rays(5,n)
           targets(4,n) = 1.0d0
         enddo
 
-        allocate(sources(8,npttot))
-        call MPI_ALLGATHERV(srcloc,8*nptlc,MPI_DOUBLE_PRECISION,&
-             sources,8*recvcounts,8*displs,MPI_DOUBLE_PRECISION,&
+        allocate(sources(10,npttot))
+        call MPI_ALLGATHERV(srcloc,10*nptlc,MPI_DOUBLE_PRECISION,&
+             sources,10*recvcounts,10*displs,MPI_DOUBLE_PRECISION,&
              MPI_COMM_WORLD,ierr)
 
         allocate(ex(nptlc),ey(nptlc),ez(nptlc),bx(nptlc),by(nptlc),bz(nptlc))
@@ -193,7 +195,7 @@ contains
                                oex,oey,oez,obx,oby,obz)
         implicit none
         integer, intent(in) :: gk,npttot
-        double precision, dimension(8,npttot), intent(in) :: sources
+        double precision, dimension(10,npttot), intent(in) :: sources
         double precision, intent(in) :: r0
         logical, intent(in) :: image_on,exclude_self_image
         double precision, intent(out) :: oex,oey,oez,obx,oby,obz
@@ -277,7 +279,7 @@ contains
         subroutine check_single_particle_image()
         implicit none
         double precision, dimension(4,1) :: t1
-        double precision, dimension(8,1) :: s1
+        double precision, dimension(10,1) :: s1
         double precision, dimension(1) :: e1x,e1y,e1z,b1x,b1y,b1z
         double precision :: z0,analytic,diff
 
@@ -294,6 +296,8 @@ contains
         s1(6,1) = 0.0d0
         s1(7,1) = 1.0d0
         s1(8,1) = 1.0d0
+        s1(9,1) = 0.5d0
+        s1(10,1) = 0.5d0
 
         call pt2ptFields(1,t1,0,1,s1,.true.,R0,e1x,e1y,e1z,b1x,b1y,b1z)
 

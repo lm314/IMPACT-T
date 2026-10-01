@@ -1829,9 +1829,11 @@
         myoffset = displs(myid+1)
 
         !//build the local source array: one entry per quantity
-        !//(x,y,z,betax,betay,betaz,gamma,emitted flag), with gamma and
-        !//beta computed once per particle rather than once per pair.
-        allocate(srcloc(8,nptlc))
+        !//(x,y,z,betax,betay,betaz,gamma,emitted flag,
+        !//gamma^2/(gamma+1),gamma/(gamma+1)), with gamma, beta and the
+        !//last two (pair-loop-invariant, so computed once per particle
+        !//rather than once per pair) all computed once per particle.
+        allocate(srcloc(10,nptlc))
         do n = 1, nptlc
           if(rays(5,n).gt.0.0) then
             gam = sqrt(1.0d0+rays(2,n)**2+rays(4,n)**2+rays(6,n)**2)
@@ -1843,6 +1845,8 @@
             srcloc(6,n) = rays(6,n)/gam
             srcloc(7,n) = gam
             srcloc(8,n) = 1.0d0
+            srcloc(9,n) = gam*gam/(gam+1.0d0)
+            srcloc(10,n) = gam/(gam+1.0d0)
             targets(1,n) = rays(1,n)
             targets(2,n) = rays(3,n)
             targets(3,n) = rays(5,n)
@@ -1853,9 +1857,9 @@
           endif
         enddo
 
-        allocate(sources(8,npttot))
-        call MPI_ALLGATHERV(srcloc,8*nptlc,MPI_DOUBLE_PRECISION,&
-             sources,8*recvcounts,8*displs,MPI_DOUBLE_PRECISION,&
+        allocate(sources(10,npttot))
+        call MPI_ALLGATHERV(srcloc,10*nptlc,MPI_DOUBLE_PRECISION,&
+             sources,10*recvcounts,10*displs,MPI_DOUBLE_PRECISION,&
              MPI_COMM_WORLD,ierr)
         deallocate(srcloc)
 
@@ -1945,8 +1949,13 @@
         !> @param[in] myoffset number of particles on lower-rank processes,
         !>            so local target n has global index myoffset+n
         !> @param[in] npttot total number of particles (size of sources)
-        !> @param[in] sources(8,npttot): x,y,z,betax,betay,betaz,gamma,
-        !>            emitted-flag of every particle, gathered from all ranks
+        !> @param[in] sources(10,npttot): x,y,z,betax,betay,betaz,gamma,
+        !>            emitted-flag, gamma^2/(gamma+1), gamma/(gamma+1) of
+        !>            every particle, gathered from all ranks. The last two
+        !>            are pair-loop-invariant (same for every target, and
+        !>            the same whether this source enters the direct or the
+        !>            image term), so they're computed once per particle by
+        !>            the caller instead of twice per pair here.
         !> @param[in] image whether to add the image term (Flagimg and
         !>            before zimage); each particle then also feels its own
         !>            image (no self-exclusion in the image term)
@@ -1959,13 +1968,13 @@
         implicit none
         integer, intent(in) :: nptlc,npttot,myoffset
         double precision, dimension(4,nptlc), intent(in) :: targets
-        double precision, dimension(8,npttot), intent(in) :: sources
+        double precision, dimension(10,npttot), intent(in) :: sources
         logical, intent(in) :: image
         double precision, intent(in) :: r0
         double precision, dimension(nptlc), intent(out) :: ex,ey,ez,bx,by,bz
         integer :: n,j,gidx
         double precision :: rijx,rijy,rijz,rijx2,rijy2,rijz2,rij2sq,rinv,rinv3
-        double precision :: betajx,betajy,betajz,gammaj,tmp1,tmp2
+        double precision :: betajx,betajy,betajz,gammaj,c1j,c2j,tmp1,tmp2
         double precision :: sumex,sumey,sumez,sumbx,sumby,sumbz
         double precision :: tx,ty,tz,r0sq,r0inv
         logical :: valid
@@ -1980,7 +1989,7 @@
         !$acc parallel loop gang vector &
         !$acc   private(j,gidx,tx,ty,tz,valid,sumex,sumey,sumez,sumbx,sumby, &
         !$acc           sumbz,rijx,rijy,rijz,rijx2,rijy2,rijz2,rij2sq,rinv, &
-        !$acc           rinv3,betajx,betajy,betajz,gammaj,tmp1,tmp2)
+        !$acc           rinv3,betajx,betajy,betajz,gammaj,c1j,c2j,tmp1,tmp2)
         do n = 1, nptlc
           valid = targets(4,n).gt.0.0d0
           sumex = 0.0d0
@@ -2001,6 +2010,8 @@
               if(sources(8,j).gt.0.0d0) then
 
                 gammaj = sources(7,j)
+                c1j = sources(9,j)
+                c2j = sources(10,j)
 
                 !//space charge of the beam itself; skip the particle's own
                 !//direct (non-image) term.
@@ -2011,12 +2022,12 @@
                   rijx = tx-sources(1,j)
                   rijy = ty-sources(2,j)
                   rijz = tz-sources(3,j)
-                  tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
+                  tmp1 = c1j*(rijx*betajx+rijy*betajy+rijz*betajz)
                   rijx2 = rijx + tmp1*betajx
                   rijy2 = rijy + tmp1*betajy
                   rijz2 = rijz + tmp1*betajz
                   rij2sq = rijx2**2+rijy2**2+rijz2**2
-                  tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
+                  tmp2 = c2j*(betajx*rijx2+betajy*rijy2+betajz*rijz2)
                   if(rij2sq.gt.r0sq) then
                     rinv = 1.0d0/sqrt(rij2sq)
                   else
@@ -2040,12 +2051,12 @@
                   rijx = tx-sources(1,j)
                   rijy = ty-sources(2,j)
                   rijz = tz+sources(3,j)
-                  tmp1 = gammaj**2*(rijx*betajx+rijy*betajy+rijz*betajz)/(gammaj+1)
+                  tmp1 = c1j*(rijx*betajx+rijy*betajy+rijz*betajz)
                   rijx2 = rijx + tmp1*betajx
                   rijy2 = rijy + tmp1*betajy
                   rijz2 = rijz + tmp1*betajz
                   rij2sq = rijx2**2+rijy2**2+rijz2**2
-                  tmp2 = gammaj*(betajx*rijx2+betajy*rijy2+betajz*rijz2)/(gammaj+1)
+                  tmp2 = c2j*(betajx*rijx2+betajy*rijy2+betajz*rijz2)
                   if(rij2sq.gt.r0sq) then
                     rinv = 1.0d0/sqrt(rij2sq)
                   else

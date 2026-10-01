@@ -3,6 +3,10 @@
 ! evaluations per call, per IMPACTT_GPU_PORT_PLAN.md's "What the code does
 ! today"). Single rank only -- this measures one GPU's (or, built without
 ! USE_GPU, one CPU core's) raw kernel rate, not multi-GPU scaling (A3).
+! Builds the 10-column source array (x,y,z,betax,betay,betaz,gamma,flag,
+! gamma^2/(gamma+1),gamma/(gamma+1)) the same way the production gather
+! does, with the last two precomputed once per particle rather than once
+! per pair inside pt2ptFields.
 ! Not part of the CMake build; see tests/README.md for how to build and run.
 program bench_pt2ptfields
         use BeamBunchclass, only: pt2ptFields
@@ -30,7 +34,7 @@ program bench_pt2ptfields
           call MPI_ABORT(MPI_COMM_WORLD,1,ierr)
         endif
 
-        allocate(sources(8,NTOT),targets(4,NTOT))
+        allocate(sources(10,NTOT),targets(4,NTOT))
         do n = 1, NTOT
           gpx = 0.30d0*sin(0.881d0*n+1.20d0)
           gpy = 0.30d0*cos(0.727d0*n+0.90d0)
@@ -44,6 +48,8 @@ program bench_pt2ptfields
           sources(6,n) = gpz/gam
           sources(7,n) = gam
           sources(8,n) = 1.0d0
+          sources(9,n) = gam*gam/(gam+1.0d0)
+          sources(10,n) = gam/(gam+1.0d0)
           targets(1,n) = sources(1,n)
           targets(2,n) = sources(2,n)
           targets(3,n) = sources(3,n)
