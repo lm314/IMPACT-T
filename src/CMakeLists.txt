@@ -70,8 +70,13 @@ if(USE_GPU)
             "${CMAKE_Fortran_COMPILER_ID}")
     endif()
     target_compile_definitions(${OUTPUT_NAME} PUBLIC USE_GPU)
-    target_compile_options(${OUTPUT_NAME} PRIVATE -acc=gpu -gpu=cc90 -cuda)
-    target_link_options(${OUTPUT_NAME} PRIVATE -acc=gpu -gpu=cc90 -cuda -cudalib=cufft)
+    # maxregcount:64 was chosen by an A2 sweep over pt2ptFields's kernel
+    # (IMPACTT_GPU_PORT_PLAN.md Progress, 2026-10-01): it gives the best
+    # measured pair-evaluation rate (+3.2% over the unconstrained default),
+    # with a sharp falloff (register spilling) below ~56. Re-sweep if the
+    # kernel's live-scalar count changes materially.
+    target_compile_options(${OUTPUT_NAME} PRIVATE -acc=gpu -gpu=cc90 -gpu=maxregcount:64 -cuda)
+    target_link_options(${OUTPUT_NAME} PRIVATE -acc=gpu -gpu=cc90 -gpu=maxregcount:64 -cuda -cudalib=cufft)
 endif()
 
 if(USE_MPI)
