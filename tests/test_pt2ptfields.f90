@@ -160,13 +160,13 @@ program test_pt2ptfields
           endif
         endif
 
-        !//A2 field-level check: dump Check A's (image on) computed fields,
-        !//one row per local particle, so the same binary built from a
-        !//GPU-enabled (OpenACC) object and a CPU-only object can be diffed
-        !//directly with compare_runs.py --diff-fields. Only at nproc=1,
-        !//since that's how the GPU-vs-CPU comparison is run (one rank,
-        !//one GPU). The env var names the output file.
-        if(nproc.eq.1) call dump_fields_if_requested()
+        !//A2/A3 field-level check: gather Check A's (image on) computed
+        !//fields to rank 0 in global particle order and dump them, so
+        !//runs at different nproc/GPU counts -- or a GPU build vs a
+        !//CPU-only build -- can be diffed directly with
+        !//compare_runs.py --diff-fields. The env var names the output
+        !//file.
+        call dump_fields_if_requested()
 
         !//Check D: analytic self-image of a single particle at rest at
         !//height z: image field should be e/(4 pi eps0 (2z)^2) toward the
@@ -262,18 +262,47 @@ contains
 
         end subroutine ref_fields
 
+        !//Gathers ex..bz (Check A's fields) to rank 0 in global particle
+        !//order via MPI_GATHERV, reusing the same recvcounts/displs the
+        !//source gather used -- works at any nproc, so a run split across
+        !//P ranks/GPUs produces the same file a 1-rank run would, letting
+        !//different GPU counts be diffed directly against each other.
         subroutine dump_fields_if_requested()
         implicit none
         character(len=4096) :: outfile
-        integer :: outlen, outstat, u, n
+        integer :: outlen, outstat, u, n, gerr
+        double precision, allocatable :: gex(:),gey(:),gez(:),gbx(:),gby(:),gbz(:)
         call get_environment_variable('IMPACTT_FIELD_DUMP', outfile, outlen, outstat)
         if(outstat.ne.0) return
-        open(newunit=u, file=trim(outfile(1:outlen)), status='replace', action='write')
-        do n = 1, nptlc
-          write(u,'(6ES24.16)') ex(n),ey(n),ez(n),bx(n),by(n),bz(n)
-        enddo
-        close(u)
-        print '(A,A)','field dump written to ', trim(outfile(1:outlen))
+
+        if(myid.eq.0) then
+          allocate(gex(npttot),gey(npttot),gez(npttot),gbx(npttot),gby(npttot),gbz(npttot))
+        else
+          allocate(gex(1),gey(1),gez(1),gbx(1),gby(1),gbz(1))
+        endif
+
+        call MPI_GATHERV(ex,nptlc,MPI_DOUBLE_PRECISION,gex,recvcounts,displs,&
+             MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,gerr)
+        call MPI_GATHERV(ey,nptlc,MPI_DOUBLE_PRECISION,gey,recvcounts,displs,&
+             MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,gerr)
+        call MPI_GATHERV(ez,nptlc,MPI_DOUBLE_PRECISION,gez,recvcounts,displs,&
+             MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,gerr)
+        call MPI_GATHERV(bx,nptlc,MPI_DOUBLE_PRECISION,gbx,recvcounts,displs,&
+             MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,gerr)
+        call MPI_GATHERV(by,nptlc,MPI_DOUBLE_PRECISION,gby,recvcounts,displs,&
+             MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,gerr)
+        call MPI_GATHERV(bz,nptlc,MPI_DOUBLE_PRECISION,gbz,recvcounts,displs,&
+             MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,gerr)
+
+        if(myid.eq.0) then
+          open(newunit=u, file=trim(outfile(1:outlen)), status='replace', action='write')
+          do n = 1, npttot
+            write(u,'(6ES24.16)') gex(n),gey(n),gez(n),gbx(n),gby(n),gbz(n)
+          enddo
+          close(u)
+          print '(A,A)','field dump written to ', trim(outfile(1:outlen))
+        endif
+        deallocate(gex,gey,gez,gbx,gby,gbz)
         end subroutine dump_fields_if_requested
 
         subroutine check_single_particle_image()

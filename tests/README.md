@@ -41,15 +41,20 @@ Checks (see IMPACTT_GPU_PORT_PLAN.md, step A1):
   self-image field, e/(4 pi eps0 (2z)^2), to machine precision.
 
 For A2's GPU-vs-CPU field-level check, set `IMPACTT_FIELD_DUMP=<path>`
-(nproc=1 only) to also dump Check A's (image on) computed
-(ex,ey,ez,bx,by,bz), one row per particle, to that file. Build the same
-`test_pt2ptfields.f90` once against a `USE_GPU=ON` object set and run it
-on a GPU node, and once against a CPU-only (`USE_GPU=OFF`) object set,
-then diff the two dumps:
+to also dump Check A's (image on) computed (ex,ey,ez,bx,by,bz), one row
+per particle in global order (ranks' local fields are gathered to rank
+0 with `MPI_GATHERV`, so the file is the same regardless of nproc).
+Build the same `test_pt2ptfields.f90` once against a `USE_GPU=ON`
+object set and run it on a GPU node, and once against a CPU-only
+(`USE_GPU=OFF`) object set, then diff the two dumps:
 
 ```
 python3 compare_runs.py --diff-fields gpu_fields.txt cpu_fields.txt --rtol 1e-10
 ```
+
+The same dump/diff mechanism is how A3 checks that 1/2/4/8 GPUs give
+identical results: dump at each GPU count and diff pairwise against the
+1-GPU file.
 
 # A2 performance check: bench_pt2ptfields
 
@@ -87,6 +92,40 @@ ncu -i ncu_report.ncu-rep --page details
 ```
 
 See IMPACTT_GPU_PORT_PLAN.md's A2 Progress notes for what this found.
+
+# A3 multi-GPU: bench_pt2ptfields_mgpu
+
+`bench_pt2ptfields_mgpu.f90` measures scaling across several GPUs, one
+MPI rank per GPU. Unlike `bench_pt2ptfields.f90` (single rank only), it
+splits NTOT=1M particles into `nptlc=NTOT/nproc` local targets per
+rank; every rank still gathers all NTOT particles as sources
+(`MPI_ALLGATHERV`), exactly as production does, so the total pair work
+(`2*NTOT^2`) is fixed and just divided across ranks/GPUs. Link it the
+same way as the other GPU tests, against a `USE_GPU=ON` object set, and
+launch with `srun` (not `mpirun`) so each rank gets its own GPU:
+
+```
+srun --mpi=pmix --ntasks=P --gpus-per-task=1 ./bench_pt2ptfields_mgpu
+```
+
+Reports `elapsed_max` (the slowest rank's wall time -- what the
+parallel run is actually bounded by) and the aggregate rate. Run
+`test_pt2ptfields` the same way (with `IMPACTT_FIELD_DUMP` at each P)
+for the consistency check.
+
+**Run each P as its own job, sequentially, not concurrently**: Slurm
+can schedule independent jobs for different P onto the same shared
+node at the same time if resources allow, and since every rank does
+its own full ~80MB host-to-GPU copy of the (unchanging-in-size) source
+array every call, concurrent jobs contend for host-GPU bandwidth and
+corrupt the timing -- this produced a clearly wrong "super-linear"
+scaling result once (P=1 contaminated by an overlapping P=2 job) before
+being caught by checking job start/end times. Chain jobs with
+`--dependency=afterany:<jobid>` so each starts only after the previous
+one finishes; this still never holds more GPUs than the current step
+needs.
+
+See IMPACTT_GPU_PORT_PLAN.md's A3 Progress notes for the results.
 
 # Phase 0 test harness: compare_runs.py
 
