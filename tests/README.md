@@ -151,3 +151,32 @@ It also has a `--diff-fields REF CAND` mode (A2) that skips the run-level
 check and just reports the max relative error between two
 (ex,ey,ez,bx,by,bz) dump files, e.g. `test_pt2ptfields`'s
 `IMPACTT_FIELD_DUMP` output -- see the A2 section above.
+
+# B1 GPU Poisson solve: test_poisson_gpu
+
+`test_poisson_gpu.f90` checks `openBC3D_gpu` (`src/Func/PoissonGPU.f90`)
+against `openBC3Dnew` (FFTW, 1 rank) and checks rank independence. Link it
+against a `USE_GPU=ON` object set (same way as the A2/A3 tests, with
+`-cuda -cudalib=cufft`), and run on a GPU node:
+
+```
+test_poisson_gpu NX NY NZ [NPY NPZ [DUMPFILE]]
+```
+
+- 1 rank: compares phi and phi_img for zmin = cathode / near / far (and
+  `flagImage=0` giving exactly 0), and times the GPU solve (image on).
+  `SKIPCPU=1` skips `openBC3Dnew` (use it at 512x512x64: ~hours on a core).
+  For grids up to 40000 points it also sums the image potential directly.
+- Several ranks (`srun --ntasks=NPY*NPZ --gpus-per-task=1`): GPU only;
+  `DUMPFILE` gets the gathered phi/phi_img as raw binary, so dumps from
+  different (NPY,NPZ) can be compared with `cmp`.
+
+phi must match to 1e-12. phi_img matches only to the conditioning of the
+integrated Green's function (an 8-corner difference of large values,
+noise ~ eps*(distance/cell)^3, identical on CPU and GPU), so the test
+requires 1e-11 (cathode), 2e-10 (near), and at "far" that the GPU is no
+further from the brute-force sum than the CPU is.
+
+At run time, `IMPACTT_POISSON=cpu` makes the GPU executable use the FFTW
+solver, for CPU-vs-GPU full-run comparisons. Full-run inputs are generated
+by `b1_cases/make_cases.py` (in the plan folder).

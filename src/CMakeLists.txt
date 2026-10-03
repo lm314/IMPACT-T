@@ -77,6 +77,8 @@ if(USE_GPU)
     # kernel's live-scalar count changes materially.
     target_compile_options(${OUTPUT_NAME} PRIVATE -acc=gpu -gpu=cc90 -gpu=maxregcount:64 -cuda)
     target_link_options(${OUTPUT_NAME} PRIVATE -acc=gpu -gpu=cc90 -gpu=maxregcount:64 -cuda -cudalib=cufft)
+    # B1: GPU Poisson solve (CUDA Fortran + cuFFT)
+    target_sources(${OUTPUT_NAME} PRIVATE Func/PoissonGPU.f90)
 endif()
 
 if(USE_MPI)

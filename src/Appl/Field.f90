@@ -19,6 +19,9 @@
         use Transposeclass
         use PhysConstclass
         use Fldmgerclass
+#ifdef USE_GPU
+        use PoissonGPUclass
+#endif
         type FieldQuant
 !          private
           !> num of mesh points in x and y directions.
@@ -502,7 +505,7 @@
         integer, dimension(2,0:nprocrow-1,0:nproccol-1)::LocalTable
         integer, dimension(3) :: glmshnm
         integer :: jadd,kadd,ierr
-        double precision :: t0
+        double precision :: t0,t1
 
         call getpost_Pgrid2d(grid,myid,myidy,myidz)
         call getcomm_Pgrid2d(grid,comm2d,commcol,commrow)
@@ -577,10 +580,22 @@
         hz = msize(3)*gammaz*Scxlt
 
         ! Open boundary conditions!
+#ifdef USE_GPU
+        if(use_gpu_poisson()) then
+          call starttime_Timer(t1)
+          call openBC3D_gpu(innx,inny,innz,rho,hx,hy,hz,myidz,myidy, &
+          nprocrow,nproccol,comm2d,pztable,pytable,inxglb,inyglb,inzglb, &
+          tmprho,flagImage,zshift)
+          t_poisgpu = t_poisgpu + elapsedtime_Timer(t1)
+        else
+#endif
         call openBC3Dnew(innx,inny,innz,rho,hx,hy,hz, &
         nxpylc2,nypzlc2,myidz,myidy,nprocrow,nproccol,commrow,commcol,&
         comm2d,pztable,pytable,ypzstable,xpystable,&
         inxglb,inyglb,inzglb,tmprho,flagImage,zshift)
+#ifdef USE_GPU
+        endif
+#endif
 
         do k = 1, innz
           do j = 1, inny
