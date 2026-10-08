@@ -79,6 +79,8 @@ if(USE_GPU)
     target_link_options(${OUTPUT_NAME} PRIVATE -acc=gpu -gpu=cc90 -gpu=maxregcount:64 -cuda -cudalib=cufft)
     # B1: GPU Poisson solve (CUDA Fortran + cuFFT)
     target_sources(${OUTPUT_NAME} PRIVATE Func/PoissonGPU.f90)
+    # B2: particles, fieldmaps and the step kernels on the GPU
+    target_sources(${OUTPUT_NAME} PRIVATE Appl/FieldmapGPU.f90 Appl/ParticleGPU.f90)
 endif()
 
 if(USE_MPI)

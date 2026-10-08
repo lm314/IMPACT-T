@@ -32,6 +32,11 @@
         double precision :: t_ntrslo
         double precision :: t_pt2ptfields
         double precision :: t_poisgpu
+        double precision :: t_drftgpu
+        double precision :: t_depgpu
+        double precision :: t_gradgpu
+        double precision :: t_kickgpu
+        double precision :: t_syncgpu
         double precision :: t_fft2dhpf
         double precision :: t_mfft_local1
         double precision :: t_field
@@ -68,6 +73,11 @@
         t_ntrslo = values
         t_pt2ptfields = values
         t_poisgpu = values
+        t_drftgpu = values
+        t_depgpu = values
+        t_gradgpu = values
+        t_kickgpu = values
+        t_syncgpu = values
         t_fft2dhpf = values
         t_mfft_local1 = values
         t_field = values
@@ -118,6 +128,11 @@
         call showtime_aux( "ntrslo",      t_ntrslo )
         call showtime_aux( "pt2ptfields", t_pt2ptfields )
         call showtime_aux( "poisgpu",     t_poisgpu )
+        call showtime_aux( "drftgpu",     t_drftgpu )
+        call showtime_aux( "depgpu",     t_depgpu )
+        call showtime_aux( "gradgpu",     t_gradgpu )
+        call showtime_aux( "kickgpu",     t_kickgpu )
+        call showtime_aux( "syncgpu",     t_syncgpu )
         call showtime_aux( "fft2dhpf",    t_fft2dhpf )
         call showtime_aux( "mfft_local1", t_mfft_local1 )
         call showtime_aux( "diag",        t_diag )

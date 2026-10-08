@@ -42,6 +42,10 @@
         use Distributionclass
         use Rangerclass
         use Depositorclass
+#ifdef USE_GPU
+        use ParticleGPUclass
+        use FieldmapGPUclass
+#endif
         implicit none
         !# of phase dim., num. total and local particles, int. dist. 
         !and restart switch, error study switch, substep for space-charge
@@ -746,6 +750,12 @@
 !for switch integrator: -18
         integer :: flaginteg = 0
         real*8, dimension(101) :: tinteg
+!for the GPU particle path (B2): gpupart selects it for the run (USE_GPU,
+!IMPACTT_PARTICLES), gpustep for one step.
+        logical :: gpupart = .false., gpustep = .false., gpuok = .false.
+        logical :: gpuwarned = .false.
+        character(len=96) :: gpuwhy
+        integer, dimension(3) :: gmesh
 !--------------
 ! dielectric wakefield module implemented by Daniel Mihalcea:
 ! PRST-AB, 15, 081304, (2012).
@@ -1234,6 +1244,14 @@
         enddo
         dzz = betazini*Clight*dtless*Dt
         zmin = 0.0d0
+#ifdef USE_GPU
+        gpupart = gpu_particles_enabled()
+        if(gpupart) then
+          call gpu_particles_init(Nbunch)
+          if(myid.eq.0) print*,"particles and fields on the GPU "//&
+                               "(IMPACTT_PARTICLES=cpu selects the CPU path)"
+        endif
+#endif
         call MPI_BARRIER(comm2d,ierr)
         !print*,"iout: ",iout,tphout(1)
         nfileout = 1000
@@ -1256,6 +1274,9 @@
           !if(t.le.tsteer(isteer+1) .and. (t+dtless*Dt).ge.tsteer(isteer+1)) then
           if(distance.le.tsteer(isteer+1) .and. (distance+dzz).ge.tsteer(isteer+1)) then
             isteer = isteer + 1
+#ifdef USE_GPU
+            if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
             do ib = 1, Nbunch
               !//find the range and center information of each bunch/bin
               call singlerange(Ebunch(ib)%Pts1,Nplocal(ib),Np(ib),&
@@ -1275,11 +1296,17 @@
                  !Ebunch(ib)%Pts1(6,ipt) = Ebunch(ib)%Pts1(6,ipt) - sgcenter(6) + pzoffset(isteer)
               enddo
             enddo
+#ifdef USE_GPU
+            if(gpupart) call mark_host_newer_all(Nbunch)
+#endif
           endif
 
           !apply instant linear transfer matrix to the beam
           if(distance.le.tmap(imap+1) .and. (distance+dzz).ge.tmap(imap+1)) then
             imap = imap + 1
+#ifdef USE_GPU
+            if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
             do ib = 1, Nbunch
 
             !//find the range and center information of each bunch/bin
@@ -1313,11 +1340,17 @@
                     tmpz*rmt(6,5,imap)+tmppz*rmt(6,6,imap)+ sgcenter(6)
               enddo
             enddo
+#ifdef USE_GPU
+            if(gpupart) call mark_host_newer_all(Nbunch)
+#endif
           endif
 
           !instant heating
           if(distance.le.theat(iheat+1) .and. (distance+dzz).ge.theat(iheat+1)) then
             iheat = iheat + 1
+#ifdef USE_GPU
+            if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
             do ib = 1, ibunch
               do ipt = 1, Nplocal(ibunch)
                 call random_number(x2)
@@ -1328,11 +1361,17 @@
                                          siggambetz(iheat)*rdnorm
               enddo
             enddo
+#ifdef USE_GPU
+            if(gpupart) call mark_host_newer_all(Nbunch)
+#endif
           endif
 
           !instant z-rotation
           if(distance.le.tzrot(izrot+1) .and. (distance+dzz).ge.tzrot(izrot+1)) then
             izrot = izrot + 1
+#ifdef USE_GPU
+            if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
             do ib = 1, ibunch
               do ipt = 1, Nplocal(ibunch)
                  tmpx = Ebunch(ib)%Pts1(1,ipt)
@@ -1345,6 +1384,9 @@
                  Ebunch(ib)%Pts1(4,ipt) = -tmppx*sin(zrotang(izrot))+tmppy*cos(zrotang(izrot))
               enddo
             enddo
+#ifdef USE_GPU
+            if(gpupart) call mark_host_newer_all(Nbunch)
+#endif
           endif
 
           if(i.le.Nemission) then !first Nemission steps for emission
@@ -1464,6 +1506,13 @@
 !!! end DWA
 
           !//update particle positions using velocity for half step.
+#ifdef USE_GPU
+          if(gpupart) then
+            do ib = 1, Nbunch
+              call drift_start_gpu(ib,Ebunch(ib),dtless,flagcathode)
+            enddo
+          else
+#endif
           if(flagcathode.eq.1) then
             do ib = 1, Nbunch   
               call drifthalf_BeamBunch(Ebunch(ib),t,dtless,betazini)
@@ -1473,6 +1522,9 @@
               call drifthalforg_BeamBunch(Ebunch(ib),t,dtless)
             enddo   
           endif
+#ifdef USE_GPU
+          endif
+#endif
           t = t + 0.5*dtless*Dt
 
           !ibunch is total number of bunches within the effective computational domain
@@ -1481,8 +1533,17 @@
             !ibunch = 0
             do ib = 1, Nbunch
               !//find the range and center information of each bunch/bin
+#ifdef USE_GPU
+              if(gpupart) then
+                call singlerange_gpu(ib,Ebunch(ib),Nplocal(ib),Np(ib),&
+                               ptrange,sgcenter)
+              else
+#endif
               call singlerange(Ebunch(ib)%Pts1,Nplocal(ib),Np(ib),&
                              ptrange,sgcenter)
+#ifdef USE_GPU
+              endif
+#endif
               if(ptrange(6).gt.0.0) then
                 !ibunch = ibunch + 1
               endif 
@@ -1492,8 +1553,17 @@
           !only the bunch with zmax>0 is counted as an effective bunch 
           do ib = 1, ibunch
             !//find the range and center of each bunch/bin
+#ifdef USE_GPU
+            if(gpupart) then
+              call singlerange_gpu(ib,Ebunch(ib),Nplocal(ib),Np(ib),&
+                               ptrange,sgcenter)
+            else
+#endif
             call singlerange(Ebunch(ib)%Pts1,Nplocal(ib),Np(ib),&
                              ptrange,sgcenter)
+#ifdef USE_GPU
+            endif
+#endif
             !Ebunch(ib)%refptcl(5) = sgcenter(5) + zorgin
             Ebunch(ib)%refptcl(5) = sgcenter(5) 
             gammaz(ib) = sqrt(1.0+sgcenter(6)**2)!//gammaz from <gamma_i betaz_i>
@@ -1671,16 +1741,25 @@
               if(isw.eq.1) then !readin new data
               if(idrfile(1,ii).eq.1 .and. idrfile(2,ii).ge.100) then
                 call read1tdata_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))
+#ifdef USE_GPU
+                if(gpupart) call fldslot_upload(fldmp,idrfile(3,ii),1)
+#endif
               else if(idrfile(1,ii).eq.3) then !numerical data for solenoid.
                 call read2tsol_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))
               else if((idrfile(1,ii).eq.105).and.idrfile(2,ii)>1000) then !discrete description field
                 call read1tdata_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))
+#ifdef USE_GPU
+                if(gpupart) call fldslot_upload(fldmp,idrfile(3,ii),1)
+#endif
               else if(idrfile(1,ii).lt.110) then !Fcoef coefficient description field
                 call read1t_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))
               else if(idrfile(1,ii).eq.111) then !3D Cartesian coordinate of field
                 call read3t_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))
               else if(idrfile(1,ii).eq.112) then !azmuthal symmetric cylindrical coordinate
                 call read2t_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))
+#ifdef USE_GPU
+                if(gpupart) call fldslot_upload(fldmp,idrfile(3,ii),2)
+#endif
               else if(idrfile(1,ii).eq.113) then !analytical function description of field
                 if(idrfile(2,ii).eq.10) then
                   call read1t_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))
@@ -1732,6 +1811,9 @@
           !collimation 
           if(distance.le.tcol(icol+1) .and. (distance+dzz).ge.tcol(icol+1)) then
             icol = icol + 1
+#ifdef USE_GPU
+            if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
             iflagcol = flagcol(icol)+0.0001
             if (iflagcol.le.10) then
               do ib = 1, ibunch
@@ -1752,13 +1834,25 @@
               enddo
             !else
             endif
+#ifdef USE_GPU
+            if(gpupart) call mark_host_newer_all(Nbunch)
+#endif
           endif
 
           !check the particles outside the computational domain
           if(iflagdmshp.eq.0) then
             do ib = 1, ibunch
+#ifdef USE_GPU
+              if(gpupart) then
+                call lost_gpu(ib,Ebunch(ib),0,radmin,radmin,Perdlen,zcent,&
+                                  nplctmp,nptmp)
+              else
+#endif
               call lostREC_BeamBunch(Ebunch(ib),radmin,radmin,Perdlen,zcent,&
                                   nplctmp,nptmp)
+#ifdef USE_GPU
+              endif
+#endif
               Nplocal(ib) = nplctmp
               Np(ib) = nptmp
               !print*, 'Nplocal', nplctmp
@@ -1766,8 +1860,17 @@
             enddo
           else if(iflagdmshp.eq.1) then
             do ib = 1, ibunch
+#ifdef USE_GPU
+              if(gpupart) then
+                call lost_gpu(ib,Ebunch(ib),1,radmin,radmin,Perdlen,zcent,&
+                                  nplctmp,nptmp)
+              else
+#endif
               call lostDFO_BeamBunch(Ebunch(ib),radmin,radmin,Perdlen,zcent,&
                                   nplctmp,nptmp)
+#ifdef USE_GPU
+              endif
+#endif
               Nplocal(ib) = nplctmp
               Np(ib) = nptmp
               !print*, 'Nplocal', nplctmp
@@ -1780,6 +1883,43 @@
 
           if(zmax.le.0.0) goto 1000 !if no particles emittted pass field calcuation
 
+          gpustep = .false.
+#ifdef USE_GPU
+          if(gpupart) then
+            !every input here is the same on every rank, so all ranks take the
+            !same branch and the MPI collectives stay matched
+            gpustep = .true.
+            gpuwhy = ""
+            if(Flagerr.ne.0 .or. FlagFieldPrint.ne.0) then
+              gpustep = .false.
+              gpuwhy = "Flagerr or FlagFieldPrint"
+            else if(flaginteg.eq.2 .or. flaginteg.eq.3) then
+              gpustep = .false.
+              gpuwhy = "integrator not available"
+            else if(curr.gt.0.0 .and. flagpt2pt.ne.1) then
+              if(Flagbc.ne.1 .or. flagspc.ne.1 .or. flagazmuth.ne.0 .or. &
+                 flagwake.ne.0 .or. dflagwake.ne.0) then
+                gpustep = .false.
+                gpuwhy = "mesh solver with Flagbc/flagspc/azimuthal/wake"
+              endif
+            endif
+            if(gpustep) then
+              call build_active_table(Blnelem,zBlnelem,idrfile,fldmp,ibinit,&
+                                      ibend,t,gpuok,gpuwhy)
+              if(.not.gpuok) gpustep = .false.
+            endif
+            if(.not.gpustep) then
+              if(.not.gpuwarned .and. myid.eq.0) then
+                print*,"GPU particle path: CPU fallback for this step: ",trim(gpuwhy)
+                gpuwarned = .true.
+              endif
+              call count_fallback()
+              call ensure_host_all(Ebunch,Nbunch)
+            endif
+          endif
+#endif
+
+          if(.not.gpustep) then
           !calculate space-charge force for curr > 0 
           !if((curr.gt.0.0).and.(flagspc.eq.1)) then !solve the Poission equation 
           if((curr.gt.0.0)) then !solve the Poission equation 
@@ -2207,8 +2347,63 @@
             enddo
           endif
 
+#ifdef USE_GPU
+          if(gpupart) then
+            call mark_host_newer_all(Nbunch)
+          endif
+#endif
+          else !gpustep: fields and kick on the GPU (B2.4)
+#ifdef USE_GPU
+          if(curr.gt.0.0) then
+            if(flagpt2pt.ne.1) then !mesh solver on the global grid
+              call random_number(zrandi)
+              zadjust = zadjmax*zrandi
+              grange(5) = grange(5)-(grange(6)-grange(5))*zadjust
+              grange(6) = grange(6)+(grange(6)-grange(5))*zadjust
+              call update_CompDom(Ageom,grange,grid2d,Flagbc)
+              call getmnum_CompDom(Ageom,gmesh)
+              call getmsize_CompDom(Ageom,msize)
+              call getrange_CompDom(Ageom,range)
+              call mesh_zero_gpu(gmesh(1),gmesh(2),gmesh(3))
+              do ib = 1, ibunch
+                if ((Np(ib) == 0) .or. (abs(Ebunch(ib)%Charge) < 0.1d-10)) cycle
+                if(distance.gt.zimage) FlagImage = 0
+                zshift = -(range(5)+range(6))*gammaz(ib)*Scxlt
+                call mesh_fields_gpu(ib,Ebunch(ib),gmesh(1),gmesh(2),gmesh(3),&
+                       range,msize,gammaz(ib),gbetz(ib),flagpos,FlagImage,&
+                       zshift,totnp)
+              enddo
+              do ib = 1, ibunch
+                call kick_mesh_gpu(ib,Ebunch(ib),gmesh(1),gmesh(2),gmesh(3),&
+                       range,msize,t,dtless)
+              enddo
+            else !point-2-point space charge force
+              do ib = 1, ibunch
+                totchrg = Ebunch(ib)%Current/Bfreq
+                flagimgnow = FlagImage
+                if(distance.gt.zimage) flagimgnow = 0
+                call kickpt2pt_gpu(ib,Ebunch(ib),t,dtless,totchrg,r0,Np(ib),&
+                       Np(ib),flagimgnow)
+              enddo
+            endif
+          else !no space-charge fields, only external fields
+            do ib = 1, ibunch
+              call kick_none_gpu(ib,Ebunch(ib),t,dtless)
+            enddo
+          endif
+          call check_gpu_error()
+#endif
+          endif
+
 1000      continue
           !//update particle positions using new velocity for half step.
+#ifdef USE_GPU
+          if(gpupart) then
+            do ib = 1, Nbunch
+              call drift_end_gpu(ib,Ebunch(ib),dtless,flagcathode,betazini)
+            enddo
+          else
+#endif
           if(flagcathode.eq.1) then
             do ib = 1, Nbunch
               call drifthalf_BeamBunch(Ebunch(ib),t,dtless,betazini)
@@ -2236,10 +2431,16 @@
               call drifthalforg_BeamBunch(Ebunch(ib),t,dtless)
             enddo
           endif
+#ifdef USE_GPU
+          endif
+#endif
           t = t + 0.5*dtless*Dt
  
           !output for every 5 steps
           if(mod(i,5).eq.0) then
+#ifdef USE_GPU
+          if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
 
           if(Flagdiag.eq.1) then
             call diagnostic1avg_Output(t,Ebunch,Nbunch)
@@ -2301,6 +2502,9 @@
           dGspread = 1.0
 
           else !into bending magnet
+#ifdef USE_GPU
+            if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
 
             zorgin = zBlnelem(1,idbd) 
             zorgin2 = zBlnelem(2,idbd) 
@@ -2540,10 +2744,16 @@
               !call convExit_BeamBunch(Ebunch(ib))
               call convExit_BeamBunch(Ebunch(ib),zorgin2)
             enddo
+#ifdef USE_GPU
+            if(gpupart) call mark_host_newer_all(Nbunch)
+#endif
           endif
 
           if(distance.le.tphout(iout+1) .and. &
             (distance+dzz).ge.tphout(iout+1)) then
+#ifdef USE_GPU
+            if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
 
             !convert mechanic momentum into mechanic momentum in solenoid
             if(Flagdiag.eq.105) then 
@@ -2612,7 +2822,10 @@
 
           if(distance.le.tslout(islout+1) .and. &
             (distance+dzz).ge.tslout(islout+1)) then
- 
+#ifdef USE_GPU
+            if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
+
             islout = islout + 1
             do ib = 1, Nbunch
               qchg = Ebunch(ib)%Current/Scfreq
@@ -2624,6 +2837,9 @@
 !          if(t.le.trstart .and. (t+dtless*Dt).ge.trstart) then
           if(distance.le.trstart(irstart+1) .and. &
              (distance+dzz).ge.trstart(irstart+1)) then
+#ifdef USE_GPU
+            if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
             irstart = irstart+1
             do ib = 1, Nbunch
               call outpoint_Output(ib*nfileout+myid,Ebunch(ib),t,&
@@ -2636,6 +2852,9 @@
           !meager multiple bins into one bin
           !if(t.le.tmger .and. (t+dtless*Dt).ge.tmger) then
           if(distance.le.tmger .and. (distance+dzz).ge.tmger) then
+#ifdef USE_GPU
+             if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+#endif
              nplctmp = 0
              nptottmp = 0
              tmpcur = 0.0
@@ -2668,10 +2887,19 @@
              Ebunch(1)%Nptlocal = Nplocal(1)
              Ebunch(1)%Current = tmpcur
              deallocate(tmppts)
+#ifdef USE_GPU
+             if(gpupart) call mark_host_newer(1)
+#endif
           endif
         enddo
 
 ! final output.
+#ifdef USE_GPU
+        if(gpupart) then
+          call ensure_host_all(Ebunch,Nbunch)
+          call report_gpu_stats(myid)
+        endif
+#endif
         call MPI_BARRIER(comm2d,ierr)
         !drift back half time step
 !        do ib = 1, Nbunch   

@@ -9,9 +9,11 @@
       module PoissonGPUclass
         use cudafor
         use cufft
+        use PhysConstclass
         implicit none
         private
         public :: openBC3D_gpu, use_gpu_poisson, free_poisson_gpu
+        public :: poisson_dev, gradEB_dev, allreduce_rho_gpu
 
         integer, save :: gnx = 0, gny = 0, gnz = 0
         integer, save :: planR2C = 0, planC2R = 0
@@ -19,7 +21,8 @@
         real(8), device, allocatable, save :: rd(:,:,:), cor(:,:,:)
         complex(8), device, allocatable, save :: rhohat(:,:,:), ghat(:,:,:)
         real(8), device, allocatable, save :: stage(:,:,:)
-        real(8), device, allocatable, save :: blk(:,:,:)
+        real(8), device, allocatable, save :: blk(:,:,:), blkimg(:,:,:)
+        real(8), allocatable, save :: hbuf(:)
         integer, save :: bnx = 0, bny = 0, bnz = 0
 
       contains
@@ -138,6 +141,168 @@
         call chkfft(istat,"cufftPlan3d(Z2D)")
         end subroutine setup
 
+        !> Poisson solve on device arrays (B1.6 steps 2-9, B2.7).  src_d is the
+        !> global (nx,ny,nz) charge density; phi_d and phiimg_d receive the
+        !> (onx,ony,onz) block of the potential that starts at (y0,z0) of the
+        !> global grid (the image potential, reversed over global z).  With
+        !> scale, the extract kernels multiply by hx*hy*hz exactly as
+        !> update3Otnew_FieldQuant does.  phiimg_d is untouched if flagImage=0.
+        subroutine poisson_dev(nx,ny,nz,src_d,phi_d,phiimg_d,onx,ony,onz,y0,z0, &
+                               hx,hy,hz,flagImage,zshift,scale)
+        implicit none
+        integer, intent(in) :: nx,ny,nz,onx,ony,onz,y0,z0,flagImage
+        real(8), device, intent(in) :: src_d(nx,ny,nz)
+        real(8), device :: phi_d(onx,ony,onz), phiimg_d(onx,ony,onz)
+        double precision, intent(in) :: hx,hy,hz,zshift
+        logical, intent(in) :: scale
+        integer :: i,j,k,istat,clo
+        double precision :: recfourpi,s,hxyz
+
+        call setup(nx,ny,nz)
+        recfourpi = 1.0d0/(8.0d0*asin(1.0d0))
+        hxyz = hx*hy*hz
+        s = 1.0d0/(8.0d0*dble(nx)*dble(ny)*dble(nz))
+
+        ! zero-padded rho -> rd, FFT -> rhohat
+        !$cuf kernel do(3) <<<*,*>>>
+        do k = 1, 2*nz
+          do j = 1, 2*ny
+            do i = 1, 2*nx
+              if(i.le.nx .and. j.le.ny .and. k.le.nz) then
+                rd(i,j,k) = src_d(i,j,k)
+              else
+                rd(i,j,k) = 0.0d0
+              endif
+            enddo
+          enddo
+        enddo
+        call chkcuda("pad")
+        istat = cufftExecD2Z(planR2C,rd,rhohat)
+        call chkfft(istat,"cufftExecD2Z(rho)")
+
+        ! direct Green's function
+        !$cuf kernel do(3) <<<*,*>>>
+        do k = 0, nz+1
+          do j = 0, ny+1
+            do i = 0, nx+1
+              cor(i,j,k) = recfourpi*antider(i*hx-hx/2,j*hy-hy/2,k*hz-hz/2)/hxyz
+            enddo
+          enddo
+        enddo
+        call chkcuda("direct corners")
+        !$cuf kernel do(3) <<<*,*>>>
+        do k = 1, 2*nz
+          do j = 1, 2*ny
+            do i = 1, 2*nx
+              rd(i,j,k) = dcor(cor,mirror(i,nx),mirror(j,ny),mirror(k,nz),nx,ny)
+            enddo
+          enddo
+        enddo
+        call chkcuda("direct G")
+        istat = cufftExecD2Z(planR2C,rd,ghat)
+        call chkfft(istat,"cufftExecD2Z(G)")
+
+        ! multiply, inverse FFT, extract the requested block
+        !$cuf kernel do(3) <<<*,*>>>
+        do k = 1, 2*nz
+          do j = 1, 2*ny
+            do i = 1, nx+1
+              ghat(i,j,k) = rhohat(i,j,k)*ghat(i,j,k)*s
+            enddo
+          enddo
+        enddo
+        call chkcuda("multiply")
+        istat = cufftExecZ2D(planC2R,ghat,rd)
+        call chkfft(istat,"cufftExecZ2D")
+        if(scale) then
+          !$cuf kernel do(3) <<<*,*>>>
+          do k = 1, onz
+            do j = 1, ony
+              do i = 1, onx
+                phi_d(i,j,k) = rd(i,y0+j,z0+k)*hx*hy*hz
+              enddo
+            enddo
+          enddo
+        else
+          !$cuf kernel do(3) <<<*,*>>>
+          do k = 1, onz
+            do j = 1, ony
+              do i = 1, onx
+                phi_d(i,j,k) = rd(i,y0+j,z0+k)
+              enddo
+            enddo
+          enddo
+        endif
+        call chkcuda("extract")
+
+        ! image potential
+        if(flagImage.eq.1) then
+          !$cuf kernel do(3) <<<*,*>>>
+          do k = 0, 2*nz+1
+            do j = 0, ny+1
+              do i = 0, nx+1
+                if(k.le.nz) then
+                  cor(i,j,k) = recfourpi*antider(i*hx-hx/2,j*hy-hy/2, &
+                               k*hz-hz/2+zshift)/hxyz
+                else
+                  cor(i,j,k) = recfourpi*antider(i*hx-hx/2,j*hy-hy/2, &
+                               zshift-hz*(nz-(k-(nz+1)))-hz/2)/hxyz
+                endif
+              enddo
+            enddo
+          enddo
+          call chkcuda("image corners")
+          !$cuf kernel do(3) <<<*,*>>>
+          do k = 1, 2*nz
+            do j = 1, 2*ny
+              do i = 1, 2*nx
+                if(k-1.lt.nz) then
+                  clo = k-1
+                else
+                  clo = k
+                endif
+                rd(i,j,k) = dcor(cor,mirror(i,nx),mirror(j,ny),clo,nx,ny)
+              enddo
+            enddo
+          enddo
+          call chkcuda("image G")
+          istat = cufftExecD2Z(planR2C,rd,ghat)
+          call chkfft(istat,"cufftExecD2Z(Gimg)")
+          !$cuf kernel do(3) <<<*,*>>>
+          do k = 1, 2*nz
+            do j = 1, 2*ny
+              do i = 1, nx+1
+                ghat(i,j,k) = -rhohat(i,j,k)*ghat(i,j,k)*s
+              enddo
+            enddo
+          enddo
+          call chkcuda("image multiply")
+          istat = cufftExecZ2D(planC2R,ghat,rd)
+          call chkfft(istat,"cufftExecZ2D(img)")
+          if(scale) then
+            !$cuf kernel do(3) <<<*,*>>>
+            do k = 1, onz
+              do j = 1, ony
+                do i = 1, onx
+                  phiimg_d(i,j,k) = rd(i,y0+j,nz+1-(z0+k))*hx*hy*hz
+                enddo
+              enddo
+            enddo
+          else
+            !$cuf kernel do(3) <<<*,*>>>
+            do k = 1, onz
+              do j = 1, ony
+                do i = 1, onx
+                  phiimg_d(i,j,k) = rd(i,y0+j,nz+1-(z0+k))
+                enddo
+              enddo
+            enddo
+          endif
+          call chkcuda("image extract")
+        endif
+
+        end subroutine poisson_dev
+
         !> Same arguments as openBC3Dnew's of the same names (the FFT
         !> transpose tables are dropped).  rho is overwritten with the
         !> potential, rhoImg gets the image potential (0 if flagImage=0).
@@ -153,8 +318,7 @@
         double precision, dimension(innx,inny,innz), intent(inout) :: rho
         double precision, dimension(innx,inny,innz), intent(inout) :: rhoImg
         double precision, intent(in) :: hx,hy,hz,zshift
-        integer :: nx,ny,nz,i,j,k,kk,istat,y0,z0,ierr,nprocs,r,clo
-        double precision :: recfourpi,s,hxyz
+        integer :: nx,ny,nz,i,j,k,kk,y0,z0,ierr,nprocs,r
         double precision, allocatable :: rhoglb(:,:,:)
         integer, allocatable :: info(:),allinfo(:),counts(:),displs(:)
         double precision, allocatable :: sendbuf(:),recvbuf(:)
@@ -166,15 +330,13 @@
         call setup(nx,ny,nz)
         if(bnx.ne.innx .or. bny.ne.inny .or. bnz.ne.innz) then
           if(allocated(blk)) deallocate(blk)
+          if(allocated(blkimg)) deallocate(blkimg)
           allocate(blk(innx,inny,innz))
+          allocate(blkimg(innx,inny,innz))
           bnx = innx
           bny = inny
           bnz = innz
         endif
-
-        recfourpi = 1.0d0/(8.0d0*asin(1.0d0))
-        hxyz = hx*hy*hz
-        s = 1.0d0/(8.0d0*dble(nx)*dble(ny)*dble(nz))
 
         y0 = 0
         do i = 0, myidy-1
@@ -223,126 +385,95 @@
           deallocate(rhoglb,recvbuf,sendbuf,info,allinfo,counts,displs)
         endif
 
-        ! 2. zero-padded rho -> rd, FFT -> rhohat
-        !$cuf kernel do(3) <<<*,*>>>
-        do k = 1, 2*nz
-          do j = 1, 2*ny
-            do i = 1, 2*nx
-              if(i.le.nx .and. j.le.ny .and. k.le.nz) then
-                rd(i,j,k) = stage(i,j,k)
-              else
-                rd(i,j,k) = 0.0d0
-              endif
-            enddo
-          enddo
-        enddo
-        call chkcuda("pad")
-        istat = cufftExecD2Z(planR2C,rd,rhohat)
-        call chkfft(istat,"cufftExecD2Z(rho)")
-
-        ! 3. direct Green's function
-        !$cuf kernel do(3) <<<*,*>>>
-        do k = 0, nz+1
-          do j = 0, ny+1
-            do i = 0, nx+1
-              cor(i,j,k) = recfourpi*antider(i*hx-hx/2,j*hy-hy/2,k*hz-hz/2)/hxyz
-            enddo
-          enddo
-        enddo
-        call chkcuda("direct corners")
-        !$cuf kernel do(3) <<<*,*>>>
-        do k = 1, 2*nz
-          do j = 1, 2*ny
-            do i = 1, 2*nx
-              rd(i,j,k) = dcor(cor,mirror(i,nx),mirror(j,ny),mirror(k,nz),nx,ny)
-            enddo
-          enddo
-        enddo
-        call chkcuda("direct G")
-        istat = cufftExecD2Z(planR2C,rd,ghat)
-        call chkfft(istat,"cufftExecD2Z(G)")
-
-        ! 4. multiply, inverse FFT, extract this rank's block
-        !$cuf kernel do(3) <<<*,*>>>
-        do k = 1, 2*nz
-          do j = 1, 2*ny
-            do i = 1, nx+1
-              ghat(i,j,k) = rhohat(i,j,k)*ghat(i,j,k)*s
-            enddo
-          enddo
-        enddo
-        call chkcuda("multiply")
-        istat = cufftExecZ2D(planC2R,ghat,rd)
-        call chkfft(istat,"cufftExecZ2D")
-        !$cuf kernel do(3) <<<*,*>>>
-        do k = 1, innz
-          do j = 1, inny
-            do i = 1, innx
-              blk(i,j,k) = rd(i,y0+j,z0+k)
-            enddo
-          enddo
-        enddo
-        call chkcuda("extract")
+        call poisson_dev(nx,ny,nz,stage,blk,blkimg,innx,inny,innz,y0,z0, &
+                         hx,hy,hz,flagImage,zshift,.false.)
         rho = blk
-
-        ! 5. image potential
         if(flagImage.eq.1) then
-          !$cuf kernel do(3) <<<*,*>>>
-          do k = 0, 2*nz+1
-            do j = 0, ny+1
-              do i = 0, nx+1
-                if(k.le.nz) then
-                  cor(i,j,k) = recfourpi*antider(i*hx-hx/2,j*hy-hy/2, &
-                               k*hz-hz/2+zshift)/hxyz
-                else
-                  cor(i,j,k) = recfourpi*antider(i*hx-hx/2,j*hy-hy/2, &
-                               zshift-hz*(nz-(k-(nz+1)))-hz/2)/hxyz
-                endif
-              enddo
-            enddo
-          enddo
-          call chkcuda("image corners")
-          !$cuf kernel do(3) <<<*,*>>>
-          do k = 1, 2*nz
-            do j = 1, 2*ny
-              do i = 1, 2*nx
-                if(k-1.lt.nz) then
-                  clo = k-1
-                else
-                  clo = k
-                endif
-                rd(i,j,k) = dcor(cor,mirror(i,nx),mirror(j,ny),clo,nx,ny)
-              enddo
-            enddo
-          enddo
-          call chkcuda("image G")
-          istat = cufftExecD2Z(planR2C,rd,ghat)
-          call chkfft(istat,"cufftExecD2Z(Gimg)")
-          !$cuf kernel do(3) <<<*,*>>>
-          do k = 1, 2*nz
-            do j = 1, 2*ny
-              do i = 1, nx+1
-                ghat(i,j,k) = -rhohat(i,j,k)*ghat(i,j,k)*s
-              enddo
-            enddo
-          enddo
-          call chkcuda("image multiply")
-          istat = cufftExecZ2D(planC2R,ghat,rd)
-          call chkfft(istat,"cufftExecZ2D(img)")
-          !$cuf kernel do(3) <<<*,*>>>
-          do k = 1, innz
-            do j = 1, inny
-              do i = 1, innx
-                blk(i,j,k) = rd(i,y0+j,nz+1-(z0+k))
-              enddo
-            enddo
-          enddo
-          call chkcuda("image extract")
-          rhoImg = blk
+          rhoImg = blkimg
         else
           rhoImg = 0.0d0
         endif
 
         end subroutine openBC3D_gpu
+
+        !> Sum a device charge-density array over all ranks (B2.4, several
+        !> ranks).  Through a host buffer; a GPU-aware MPI or NCCL can replace
+        !> it behind this routine.
+        subroutine allreduce_rho_gpu(rho_d,n)
+        implicit none
+        include 'mpif.h'
+        integer, intent(in) :: n
+        real(8), device :: rho_d(n)
+        integer :: ierr
+        if(.not.allocated(hbuf)) then
+          allocate(hbuf(n))
+        else if(size(hbuf).ne.n) then
+          deallocate(hbuf)
+          allocate(hbuf(n))
+        endif
+        hbuf = rho_d
+        call MPI_ALLREDUCE(MPI_IN_PLACE,hbuf,n,MPI_DOUBLE_PRECISION,MPI_SUM, &
+                           MPI_COMM_WORLD,ierr)
+        rho_d = hbuf
+        end subroutine allreduce_rho_gpu
+
+        !> Add the E and B fields of the potential phi to ex..by (1 rank,
+        !> Flagbc=1 branches of gradEB_FieldQuant).  hxi, hyi, hzi and flag
+        !> are gradEB_FieldQuant's; flag=1 gives the negative betC.
+        subroutine gradEB_dev(nx,ny,nz,phi,hxi,hyi,hzi,gammaz,flag, &
+                              ex,ey,ez,bx,by)
+        implicit none
+        integer, intent(in) :: nx,ny,nz,flag
+        real(8), device, intent(in) :: phi(nx,ny,nz)
+        real(8), device :: ex(nx,ny,nz),ey(nx,ny,nz),ez(nx,ny,nz)
+        real(8), device :: bx(nx,ny,nz),by(nx,ny,nz)
+        double precision, intent(in) :: hxi,hyi,hzi,gammaz
+        double precision :: betC
+        integer :: i,j,k
+        double precision :: egx,egy,egz
+
+        if(flag.ne.1) then
+          betC = sqrt(gammaz**2-1.0)/gammaz/Clight
+        else
+          betC = -sqrt(gammaz**2-1.0)/gammaz/Clight
+        endif
+        !$cuf kernel do(3) <<<*,*>>>
+        do k = 1, nz
+          do j = 1, ny
+            do i = 1, nx
+              if(i.eq.1) then
+                egx = hxi*(1.5d0*phi(1,j,k)-2.0d0*phi(2,j,k)+0.5d0*phi(3,j,k))
+              else if(i.eq.nx) then
+                egx = hxi*(-0.5d0*phi(nx-2,j,k)+2.0d0*phi(nx-1,j,k)- &
+                           1.5d0*phi(nx,j,k))
+              else
+                egx = 0.5d0*hxi*(phi(i-1,j,k)-phi(i+1,j,k))
+              endif
+              if(j.eq.1) then
+                egy = hyi*(1.5d0*phi(i,1,k)-2*phi(i,2,k)+0.5d0*phi(i,3,k))
+              else if(j.eq.ny) then
+                egy = hyi*(-0.5d0*phi(i,ny-2,k)+2*phi(i,ny-1,k)- &
+                           1.5d0*phi(i,ny,k))
+              else
+                egy = 0.5d0*hyi*(phi(i,j-1,k)-phi(i,j+1,k))
+              endif
+              if(k.eq.1) then
+                egz = hzi*(1.5d0*phi(i,j,1)-2*phi(i,j,2)+0.5d0*phi(i,j,3))
+              else if(k.eq.nz) then
+                egz = hzi*(-0.5d0*phi(i,j,nz-2)+2*phi(i,j,nz-1)- &
+                           1.5d0*phi(i,j,nz))
+              else
+                egz = 0.5d0*hzi*(phi(i,j,k-1)-phi(i,j,k+1))
+              endif
+              ex(i,j,k) = ex(i,j,k) + gammaz*egx
+              by(i,j,k) = by(i,j,k) + gammaz*egx*betC
+              ey(i,j,k) = ey(i,j,k) + gammaz*egy
+              bx(i,j,k) = bx(i,j,k) - gammaz*egy*betC
+              ez(i,j,k) = ez(i,j,k) + egz
+            enddo
+          enddo
+        enddo
+        call chkcuda("gradEB")
+        end subroutine gradEB_dev
 
       end module PoissonGPUclass

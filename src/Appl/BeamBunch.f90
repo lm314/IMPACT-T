@@ -1963,6 +1963,7 @@
         !> @param[out] ex,ey,ez,bx,by,bz(nptlc): fields at the local targets,
         !>            not yet scaled by coefE or combined with external fields
         !--------------------------------------------------------------------------------------
+        !KEEP THIS BODY IDENTICAL to pt2ptFields_dev below (USE_GPU).
         subroutine pt2ptFields(nptlc,targets,myoffset,npttot,sources,&
                                 image,r0,ex,ey,ez,bx,by,bz)
         implicit none
@@ -2085,6 +2086,135 @@
         !$acc end data
 
         end subroutine pt2ptFields
+
+#ifdef USE_GPU
+        !--------------------------------------------------------------------------------------
+        !> pt2ptFields on arrays that are already on the device (B2.5.7): the
+        !> same body as pt2ptFields, without the data region.  nvfortran treats
+        !> device arrays in an OpenACC compute region as present.  KEEP THE TWO
+        !> BODIES IDENTICAL.
+        !--------------------------------------------------------------------------------------
+        subroutine pt2ptFields_dev(nptlc,targets,myoffset,npttot,sources,&
+                                image,r0,ex,ey,ez,bx,by,bz)
+        implicit none
+        integer, intent(in) :: nptlc,npttot,myoffset
+        double precision, device, dimension(4,nptlc), intent(in) :: targets
+        double precision, device, dimension(10,npttot), intent(in) :: sources
+        logical, intent(in) :: image
+        double precision, intent(in) :: r0
+        double precision, device, dimension(nptlc), intent(out) :: ex,ey,ez,bx,by,bz
+        integer :: n,j,gidx
+        double precision :: rijx,rijy,rijz,rijx2,rijy2,rijz2,rij2sq,rinv,rinv3
+        double precision :: betajx,betajy,betajz,gammaj,c1j,c2j,tmp1,tmp2
+        double precision :: sumex,sumey,sumez,sumbx,sumby,sumbz
+        double precision :: tx,ty,tz,r0sq,r0inv
+        logical :: valid
+
+        !//r0 enters every pair only through 1/r0 and 1/r0^2, so precompute
+        !//both once instead of a division (r0sq compare) and a cube (r0**3)
+        !//inside the pair loop.
+        r0sq = r0*r0
+        r0inv = 1.0d0/r0
+
+        !$acc parallel loop gang vector &
+        !$acc   private(j,gidx,tx,ty,tz,valid,sumex,sumey,sumez,sumbx,sumby, &
+        !$acc           sumbz,rijx,rijy,rijz,rijx2,rijy2,rijz2,rij2sq,rinv, &
+        !$acc           rinv3,betajx,betajy,betajz,gammaj,c1j,c2j,tmp1,tmp2)
+        do n = 1, nptlc
+          valid = targets(4,n).gt.0.0d0
+          sumex = 0.0d0
+          sumey = 0.0d0
+          sumez = 0.0d0
+          sumbx = 0.0d0
+          sumby = 0.0d0
+          sumbz = 0.0d0
+
+          if(valid) then
+            gidx = myoffset + n
+            tx = targets(1,n)
+            ty = targets(2,n)
+            tz = targets(3,n)
+
+            !$acc loop seq
+            do j = 1, npttot
+              if(sources(8,j).gt.0.0d0) then
+
+                gammaj = sources(7,j)
+                c1j = sources(9,j)
+                c2j = sources(10,j)
+
+                !//space charge of the beam itself; skip the particle's own
+                !//direct (non-image) term.
+                if(j.ne.gidx) then
+                  betajx = sources(4,j)
+                  betajy = sources(5,j)
+                  betajz = sources(6,j)
+                  rijx = tx-sources(1,j)
+                  rijy = ty-sources(2,j)
+                  rijz = tz-sources(3,j)
+                  tmp1 = c1j*(rijx*betajx+rijy*betajy+rijz*betajz)
+                  rijx2 = rijx + tmp1*betajx
+                  rijy2 = rijy + tmp1*betajy
+                  rijz2 = rijz + tmp1*betajz
+                  rij2sq = rijx2**2+rijy2**2+rijz2**2
+                  tmp2 = c2j*(betajx*rijx2+betajy*rijy2+betajz*rijz2)
+                  if(rij2sq.gt.r0sq) then
+                    rinv = 1.0d0/sqrt(rij2sq)
+                  else
+                    rinv = r0inv
+                  endif
+                  rinv3 = rinv*rinv*rinv
+                  sumex = sumex + gammaj*(rijx2-tmp2*betajx)*rinv3
+                  sumey = sumey + gammaj*(rijy2-tmp2*betajy)*rinv3
+                  sumez = sumez + gammaj*(rijz2-tmp2*betajz)*rinv3
+                  sumbx = sumbx + gammaj*(betajy*rijz2-betajz*rijy2)*rinv3
+                  sumby = sumby + gammaj*(betajz*rijx2-betajx*rijz2)*rinv3
+                  sumbz = sumbz + gammaj*(betajx*rijy2-betajy*rijx2)*rinv3
+                endif
+
+                !//image space charge of the beam; every particle, including
+                !//itself (gidx), feels its image while image is on.
+                if(image) then
+                  betajx =  sources(4,j)
+                  betajy =  sources(5,j)
+                  betajz = -sources(6,j)
+                  rijx = tx-sources(1,j)
+                  rijy = ty-sources(2,j)
+                  rijz = tz+sources(3,j)
+                  tmp1 = c1j*(rijx*betajx+rijy*betajy+rijz*betajz)
+                  rijx2 = rijx + tmp1*betajx
+                  rijy2 = rijy + tmp1*betajy
+                  rijz2 = rijz + tmp1*betajz
+                  rij2sq = rijx2**2+rijy2**2+rijz2**2
+                  tmp2 = c2j*(betajx*rijx2+betajy*rijy2+betajz*rijz2)
+                  if(rij2sq.gt.r0sq) then
+                    rinv = 1.0d0/sqrt(rij2sq)
+                  else
+                    rinv = r0inv
+                  endif
+                  rinv3 = rinv*rinv*rinv
+                  sumex = sumex - gammaj*(rijx2-tmp2*betajx)*rinv3
+                  sumey = sumey - gammaj*(rijy2-tmp2*betajy)*rinv3
+                  sumez = sumez - gammaj*(rijz2-tmp2*betajz)*rinv3
+                  sumbx = sumbx - gammaj*(betajy*rijz2-betajz*rijy2)*rinv3
+                  sumby = sumby - gammaj*(betajz*rijx2-betajx*rijz2)*rinv3
+                  sumbz = sumbz - gammaj*(betajx*rijy2-betajy*rijx2)*rinv3
+                endif
+              endif
+            enddo
+          endif
+
+          ex(n) = sumex
+          ey(n) = sumey
+          ez(n) = sumez
+          bx(n) = sumbx
+          by(n) = sumby
+          bz(n) = sumbz
+        enddo
+        !$acc end parallel loop
+
+        end subroutine pt2ptFields_dev
+#endif
 
         !rotate to the particle coordinates to local beam coordinate of "ptref".
         !Here, "ptref" coordinate has a rotation "theta" in x-z plane with
