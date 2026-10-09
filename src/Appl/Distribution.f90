@@ -863,12 +863,13 @@
         double precision, dimension(nparam) :: distparam
         integer :: i,j,jlow,jhigh,avgpts,myid,nproc,ierr,nptot,nleft
         double precision, dimension(9) :: tmptcl
-        double precision :: sum1,sum2
+        double precision :: sum1,sum2,twall0
         character*12 name1
         character*13 name2
         character*14 name3
         integer :: k,l
  
+        twall0 = MPI_WTIME()
         call MPI_COMM_RANK(MPI_COMM_WORLD,myid,ierr)
         call MPI_COMM_SIZE(MPI_COMM_WORLD,nproc,ierr)
 
@@ -950,6 +951,7 @@
             this%Pts1(5,i) = this%Pts1(5,i)/Scxlt + distparam(20)
             this%Pts1(6,i) = this%Pts1(6,i)  + distparam(21)
           enddo
+          if(myid.eq.0) print*,"read_Dist (166, text): seconds",MPI_WTIME()-twall0
  
         end subroutine read_Dist
 
@@ -969,6 +971,9 @@
         integer :: i,jlow,jhigh,avgpts,myid,nproc,ierr,nleft
         integer(8) :: nptot8
         character(len=14) :: fname
+        double precision :: twall0
+
+        twall0 = MPI_WTIME()
 
         call MPI_COMM_RANK(MPI_COMM_WORLD,myid,ierr)
         call MPI_COMM_SIZE(MPI_COMM_WORLD,nproc,ierr)
@@ -1020,6 +1025,8 @@
           this%Pts1(5,i) = this%Pts1(5,i)/Scxlt + distparam(20)
           this%Pts1(6,i) = this%Pts1(6,i)  + distparam(21)
         enddo
+
+        if(myid.eq.0) print*,"readbin_Dist (168, binary): seconds",MPI_WTIME()-twall0
 
         end subroutine readbin_Dist
 

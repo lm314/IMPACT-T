@@ -2197,6 +2197,7 @@
         integer, intent(in), optional :: binary
         logical :: isbin
         integer(8) :: nwrite,k
+        double precision :: twall0
         double precision, allocatable, dimension(:,:) :: outbuf
         integer :: np,my_rank,ierr
         integer status(MPI_STATUS_SIZE)
@@ -2223,6 +2224,7 @@
 
         nptlist = 9*nptlist
 
+        twall0 = MPI_WTIME()
         isbin = .false.
         if(present(binary)) isbin = (binary.gt.0)
 
@@ -2291,6 +2293,14 @@
         endif
 
 100     format(9(g0,1x))
+
+        if(my_rank.eq.0) then
+          if(isbin) then
+            print*,"phase_Output: unit",nfile," binary, seconds",MPI_WTIME()-twall0
+          else
+            print*,"phase_Output: unit",nfile," text, seconds",MPI_WTIME()-twall0
+          endif
+        endif
 
         deallocate(nptlist)
         deallocate(recvbuf)
