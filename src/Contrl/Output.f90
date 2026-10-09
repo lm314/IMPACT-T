@@ -2185,12 +2185,19 @@
         end subroutine diagnostic1avgZ_Output
 
         !> the 6D phase space output has (x(m), px/mc, y(m), py/mc, z(m), pz/mc).
-        subroutine phase_Output(nfile,this,samplePeriod)
+        subroutine phase_Output(nfile,this,samplePeriod,binary)
         implicit none
         include 'mpif.h'
         integer, intent(in) :: nfile
         type (BeamBunch), intent(in) :: this
         integer :: samplePeriod
+        !binary > 0: write fort.nfile as a raw stream (no record markers):
+        !one integer(8) particle count, then count x 9 doubles (the same 9
+        !columns and units as the text file, one particle after another).
+        integer, intent(in), optional :: binary
+        logical :: isbin
+        integer(8) :: nwrite,k
+        double precision, allocatable, dimension(:,:) :: outbuf
         integer :: np,my_rank,ierr
         integer status(MPI_STATUS_SIZE)
         integer :: i,j,sixnpt,mnpt
@@ -2216,7 +2223,42 @@
 
         nptlist = 9*nptlist
 
-        if(my_rank.eq.0) then
+        isbin = .false.
+        if(present(binary)) isbin = (binary.gt.0)
+
+        if(my_rank.eq.0 .and. isbin) then
+          !particles kept on each rank: i = 1, n, samplePeriod
+          nwrite = 0
+          if(this%Nptlocal.gt.0) nwrite = (this%Nptlocal-1)/samplePeriod + 1
+          do i = 1, np-1
+            if(nptlist(i).gt.0) nwrite = nwrite + (nptlist(i)/9-1)/samplePeriod + 1
+          enddo
+          allocate(outbuf(9,nwrite))
+          k = 0
+          do i = 1, this%Nptlocal,samplePeriod
+            k = k + 1
+            outbuf(:,k) = this%Pts1(1:9,i)
+            outbuf(1,k) = outbuf(1,k)*Scxlt
+            outbuf(3,k) = outbuf(3,k)*Scxlt
+            outbuf(5,k) = outbuf(5,k)*Scxlt
+          enddo
+          do i = 1, np-1
+            call MPI_RECV(recvbuf(1,1),nptlist(i),MPI_DOUBLE_PRECISION,&
+                          i,1,MPI_COMM_WORLD,status,ierr)
+            do j = 1, nptlist(i)/9,samplePeriod
+              k = k + 1
+              outbuf(:,k) = recvbuf(:,j)
+              outbuf(1,k) = outbuf(1,k)*Scxlt
+              outbuf(3,k) = outbuf(3,k)*Scxlt
+              outbuf(5,k) = outbuf(5,k)*Scxlt
+            enddo
+          enddo
+          open(nfile,status='unknown',access='stream',form='unformatted')
+          write(nfile) nwrite
+          write(nfile) outbuf
+          close(nfile)
+          deallocate(outbuf)
+        else if(my_rank.eq.0) then
           open(nfile,status='unknown')
           do i = 1, this%Nptlocal,samplePeriod
 !            write(nfile,100)this%Pts1(1,i),this%Pts1(2,i),this%Pts1(3,i),&

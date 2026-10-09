@@ -102,6 +102,10 @@
         else if(flagdist.eq.166) then
           !read in an initial distribution with format from IMPACT-T
           call read_Dist(this,nparam,distparam,ib)
+        else if(flagdist.eq.168) then
+          !same as 166, but partcl.data is the binary stream written by a
+          !"-2" element with V4 > 0: integer(8) count, then count x 9 doubles
+          call readbin_Dist(this,nparam,distparam,ib)
         else if(flagdist.eq.167) then
           !read in an initial distribution with format from IMPACT-T
           call readimpz_Dist(this,nparam,distparam,ib)
@@ -948,6 +952,76 @@
           enddo
  
         end subroutine read_Dist
+
+        !--------------------------------------------------------------------------------------
+        !> @brief
+        !> read in an initial distribution from a binary stream file (Flagdist 168): an
+        !> integer(8) count followed by count x 9 doubles (x(m), px/mc, y(m), py/mc, z(m),
+        !> pz/mc, q/m, charge, id), as written by a "-2" element with V4 > 0. Each rank
+        !> reads only its own slice. The file is partcl.data (partclx.data, ... for ib > 1).
+        !--------------------------------------------------------------------------------------
+        subroutine readbin_Dist(this,nparam,distparam,ib)
+        implicit none
+        include 'mpif.h'
+        type (BeamBunch), intent(inout) :: this
+        integer, intent(in) :: nparam,ib
+        double precision, dimension(nparam) :: distparam
+        integer :: i,jlow,jhigh,avgpts,myid,nproc,ierr,nleft
+        integer(8) :: nptot8
+        character(len=14) :: fname
+
+        call MPI_COMM_RANK(MPI_COMM_WORLD,myid,ierr)
+        call MPI_COMM_SIZE(MPI_COMM_WORLD,nproc,ierr)
+
+        if(ib.eq.1) then
+          fname = 'partcl.data'
+        else if(ib.lt.10) then
+          write(fname,'(a6,i1,a5)') 'partcl',ib,'.data'
+        else if(ib.lt.100) then
+          write(fname,'(a6,i2,a5)') 'partcl',ib,'.data'
+        else if(ib.lt.1000) then
+          write(fname,'(a6,i3,a5)') 'partcl',ib,'.data'
+        else
+          print*,"over maximum # of input particle files:...."
+          stop
+        endif
+        open(unit=12,file=trim(fname),status='old',access='stream',form='unformatted')
+        read(12) nptot8
+
+        if(nptot8.ne.this%Npt) then
+          print*,"Error: Total particle # in the partcl.data file is different from that in the ImpactT.in file."
+          stop
+        endif
+
+        avgpts = int(nptot8)/nproc
+        nleft = int(nptot8) - avgpts*nproc
+        if(myid.lt.nleft) then
+          avgpts = avgpts+1
+          jlow = myid*avgpts + 1
+          jhigh = (myid+1)*avgpts
+        else
+          jlow = myid*avgpts + 1 + nleft
+          jhigh = (myid+1)*avgpts + nleft
+        endif
+        allocate(this%Pts1(9,avgpts))
+        this%Pts1 = 0.0
+        print*,"avgpts, jlow, and jhigh: ",avgpts,jlow,jhigh
+        !8 bytes of count, then 72 bytes per particle
+        read(12,pos=9_8+72_8*int(jlow-1,8)) this%Pts1(1:9,1:avgpts)
+        close(12)
+
+        this%Nptlocal = avgpts
+        !change length to the dimensionless unit
+        do i = 1, avgpts
+          this%Pts1(1,i) = this%Pts1(1,i)/Scxlt + distparam(6)
+          this%Pts1(2,i) = this%Pts1(2,i) + distparam(7)
+          this%Pts1(3,i) = this%Pts1(3,i)/Scxlt + distparam(13)
+          this%Pts1(4,i) = this%Pts1(4,i) + distparam(14)
+          this%Pts1(5,i) = this%Pts1(5,i)/Scxlt + distparam(20)
+          this%Pts1(6,i) = this%Pts1(6,i)  + distparam(21)
+        enddo
+
+        end subroutine readbin_Dist
 
         !--------------------------------------------------------------------------------------
         !> @brief

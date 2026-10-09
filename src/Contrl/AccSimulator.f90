@@ -675,7 +675,8 @@
         !// time step size after tszstart
         integer :: flagtimesz,irstart
         double precision, dimension(101) :: trstart
-        integer, dimension(100) :: nsamp,nfileouttmp,nfileslout,nslout
+        integer, dimension(100) :: nsamp,nfileouttmp,nfileslout,nslout,nbinout
+        double precision :: tbinflag
         double precision, dimension(101) :: tszstart,dtnewsize
         double precision, dimension(101) :: tphout,tsteer,xoffset,yoffset,&
                                      pxoffset,pyoffset,zoffset,pzoffset,tslout
@@ -887,7 +888,8 @@
 
         !no phase space print out
         flagphout = 0
-        tphout = 1.0e12 
+        tphout = 1.0e12
+        nbinout = 0
         tslout = 1.0e12
         !no change of the time step size
         flagtimesz = 0
@@ -976,6 +978,9 @@
             call getparam_BeamLineElem(Blnelem(i),3,tphout(iout))
             nfileouttmp(iout) = bmpstp 
             nsamp(iout) = bnseg
+            !V4 > 0: write the dump as a binary stream (see phase_Output)
+            call getparam_BeamLineElem(Blnelem(i),4,tbinflag)
+            nbinout(iout) = nint(tbinflag)
           endif
           if(bitype.eq.(-3)) then
             flagphout = 2
@@ -2799,7 +2804,7 @@
 
             iout = iout + 1
             do ib = 1, Nbunch
-              call phase_Output(nfileouttmp(iout)+ib-1,Ebunch(ib),nsamp(iout))
+              call phase_Output(nfileouttmp(iout)+ib-1,Ebunch(ib),nsamp(iout),nbinout(iout))
             enddo
 
             do ib = 1, Nbunch
@@ -2813,7 +2818,7 @@
 
             iout = iout + 1
             do ib = 1, Nbunch
-              call phase_Output(nfileouttmp(iout)+ib-1,Ebunch(ib),nsamp(iout))
+              call phase_Output(nfileouttmp(iout)+ib-1,Ebunch(ib),nsamp(iout),nbinout(iout))
             enddo
 
             endif
