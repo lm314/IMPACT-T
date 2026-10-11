@@ -1758,8 +1758,15 @@
 #endif
               else if(idrfile(1,ii).lt.110) then !Fcoef coefficient description field
                 call read1t_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))
+#ifdef USE_GPU
+                if(gpupart .and. idrfile(1,ii).eq.4) &
+                  call fldslot_upload(fldmp,idrfile(3,ii),3)
+#endif
               else if(idrfile(1,ii).eq.111) then !3D Cartesian coordinate of field
                 call read3t_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))
+#ifdef USE_GPU
+                if(gpupart) call fldslot_upload(fldmp,idrfile(3,ii),4)
+#endif
               else if(idrfile(1,ii).eq.112) then !azmuthal symmetric cylindrical coordinate
                 call read2t_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))
 #ifdef USE_GPU
@@ -2552,6 +2559,25 @@
             t = t - 0.5*dtless*Dt
 
             Flagbctmp = 1
+#ifdef USE_GPU
+            !the GPU steps never set the local mesh sizes (only the host mesh
+            !steps do), and a run with no fallback steps reaches a bend with
+            !the initial values: take them from the current domain
+            if(gpupart) then
+              call getlcmnum_CompDom(Ageom,lcgrid)
+              Nxlocal = lcgrid(1)
+              if(npy.gt.1) then
+                Nylocal = lcgrid(2) + 2
+              else
+                Nylocal = lcgrid(2)
+              endif
+              if(npx.gt.1) then
+                Nzlocal = lcgrid(3) + 2
+              else
+                Nzlocal = lcgrid(3)
+              endif
+            endif
+#endif
             deallocate(exg)
             deallocate(eyg)
             deallocate(ezg)

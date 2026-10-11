@@ -221,10 +221,16 @@
         subroutine report_gpu_stats(myid)
         implicit none
         integer, intent(in) :: myid
+        integer :: ncart,icart
+        real(8) :: pcart(3)
+        ncart = cartout_count(icart,pcart)
         if(myid.eq.0) then
-          write(*,'(a,i0,a,i0,a,i0)') " GPU particle path: host->device copies ", &
+          write(*,'(a,i0,a,i0,a,i0,a,i0)') " GPU particle path: host->device copies ", &
                 nsync_up,", device->host copies ",nsync_down, &
-                ", CPU fallback steps ",nfallback
+                ", CPU fallback steps ",nfallback, &
+                ", 111 out-of-map points ",ncart
+          if(ncart.gt.0) write(*,'(a,i0,a,3es14.6)') &
+            "   first 111 out-of-map point: particle ",icart," at ",pcart
         endif
         end subroutine report_gpu_stats
 
