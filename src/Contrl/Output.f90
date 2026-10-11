@@ -16,6 +16,10 @@
         use Timerclass
         use BeamBunchclass
         use PhysConstclass
+#ifdef USE_GPU
+        use ParticleGPUclass, only: diag_gpu_ready,diag_zsum_gpu,&
+                  diag_pass1_gpu,diag_pass2_gpu
+#endif
 
       contains
         !> calculate <x^2>,<xp>,<px^2>,x emittance, <y^2>,<ypy>,
@@ -1766,8 +1770,13 @@
         double precision :: tmpx,tmpy,deltat,recpgamma
         integer :: npctmin,npctmax,ib,innpmb,i1,i2
         real*8, dimension(6) :: tmplc0,tmpgl0
+        logical :: usegpu
 
         call starttime_Timer(t0)
+        usegpu = .false.
+#ifdef USE_GPU
+        usegpu = diag_gpu_ready()
+#endif
 
         qmc = this(1)%Mass/1.0d6
         xl = Scxlt
@@ -1782,10 +1791,15 @@
           innp = this(ib)%Nptlocal
           innpmb = innpmb + innp
           nptot = nptot + this(ib)%Npt
-          do i = 1, innp
-            z0lc = z0lc + this(ib)%Pts1(5,i)
-          enddo
+          if(.not.usegpu) then
+            do i = 1, innp
+              z0lc = z0lc + this(ib)%Pts1(5,i)
+            enddo
+          endif
         enddo
+#ifdef USE_GPU
+        if(usegpu) call diag_zsum_gpu(this,Nbunch,z0lc)
+#endif
         call MPI_ALLREDUCE(z0lc,z0gl,1,MPI_DOUBLE_PRECISION,&
                         MPI_SUM,MPI_COMM_WORLD,ierr)
         den1 = 1.0d0/dble(nptot)
@@ -1793,6 +1807,10 @@
         z0avg = z0gl*den1
 
         tmplc0 = 0.0d0
+#ifdef USE_GPU
+        if(usegpu) call diag_pass1_gpu(this,Nbunch,z0avg,tmplc0)
+#endif
+        if(.not.usegpu) then
         do ib = 1, Nbunch
           do i = 1, this(ib)%Nptlocal
             tmpgam = sqrt(1.0d0+this(ib)%Pts1(2,i)**2+&
@@ -1811,6 +1829,7 @@
             tmplc0(6) = tmplc0(6) + this(ib)%Pts1(6,i)
           enddo
         enddo
+        endif
 
         call MPI_ALLREDUCE(tmplc0,tmpgl0,6,MPI_DOUBLE_PRECISION,&
                         MPI_SUM,MPI_COMM_WORLD,ierr)
@@ -1882,6 +1901,18 @@
 !        testmax = 0.0
         gamlc = 0.0d0
         gam2lc = 0.0d0
+#ifdef USE_GPU
+        if(usegpu) then
+          tmpgl0(1) = x0
+          tmpgl0(2) = px0
+          tmpgl0(3) = y0
+          tmpgl0(4) = py0
+          tmpgl0(5) = z0
+          tmpgl0(6) = pz0
+          call diag_pass2_gpu(this,Nbunch,z0avg,tmpgl0,tmplc,localmax,lcrmax)
+        endif
+#endif
+        if(.not.usegpu) then
         do ib = 1, Nbunch
           innp = this(ib)%Nptlocal
           do i = 1, innp
@@ -1985,9 +2016,11 @@
             endif
           enddo
         enddo
+        endif
 
 !        print*,"z0avg: ",z0avg*xl,localmax(5)*xl,testmax*xl,xl,&
 !               this(1)%Pts1(5,i1)*xl,this(1)%Pts1(5,i2)*xl
+        if(.not.usegpu) then
         tmplc(1) = x0lc
         tmplc(2) = px0lc
         tmplc(3) = y0lc
@@ -2029,6 +2062,9 @@
         tmplc(39) = ypzlocal
         tmplc(40) = zpylocal
         tmplc(41) = pypzlocal
+        else
+          tmplc(5) = z0lc
+        endif
         
         call MPI_REDUCE(tmplc,tmpgl,41,MPI_DOUBLE_PRECISION,&
                         MPI_SUM,0,MPI_COMM_WORLD,ierr)

@@ -33,6 +33,7 @@
         public :: count_fallback, ptsbuf_state, deposit_gpu, gradEB_mesh_gpu
         public :: kick_mesh_core, set_device_mesh, rho_dev, phi_dev, phiimg_dev
         public :: ex_dev, ey_dev, ez_dev, bx_dev, by_dev
+        public :: diag_gpu_ready, diag_zsum_gpu, diag_pass1_gpu, diag_pass2_gpu
 
         type ptsbuf
           real(8), device, allocatable :: p(:,:)  ! (9,cap), same layout as Pts1
@@ -1035,5 +1036,356 @@
         call sync_gpu()
         t_kickgpu = t_kickgpu + elapsedtime_Timer(t0)
         end subroutine kickpt2pt_gpu
+
+        !-------------------------------------------------------------
+        ! moments for diagnostic1avgZ_Output (C1)
+        !-------------------------------------------------------------
+        !> True when the particles of this run are device-resident, so
+        !> the diagnostic can sum on the device.  False before
+        !> gpu_particles_init (the first diagnostic at t = 0 runs on the host).
+        function diag_gpu_ready() result(flag)
+        implicit none
+        logical :: flag
+        flag = .false.
+        if(envflag.eq.1 .and. allocated(pb)) flag = .true.
+        end function diag_gpu_ready
+
+        !> sum of z over this rank's particles (all bunches).
+        subroutine diag_zsum_gpu(bunch,nb,zsum)
+        implicit none
+        integer, intent(in) :: nb
+        type (BeamBunch), dimension(:), intent(inout) :: bunch
+        double precision, intent(out) :: zsum
+        double precision :: part
+        integer :: ib
+        zsum = 0.0d0
+        do ib = 1, nb
+          call ensure_device(ib,bunch(ib))
+          if(pb(ib)%n.gt.0) then
+            call dz_core(pb(ib)%p,pb(ib)%n,part)
+            zsum = zsum + part
+          endif
+        enddo
+        end subroutine diag_zsum_gpu
+
+        subroutine dz_core(p,n,zs)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(out) :: zs
+        integer :: i
+        real(8) :: s
+        s = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          s = s + p(5,i)
+        enddo
+        zs = s
+        end subroutine dz_core
+
+        !> the six sums of tmplc0 (x, px, y, py, z, pz drifted to z0avg).
+        subroutine diag_pass1_gpu(bunch,nb,z0avg,sums)
+        implicit none
+        integer, intent(in) :: nb
+        type (BeamBunch), dimension(:), intent(inout) :: bunch
+        double precision, intent(in) :: z0avg
+        double precision, intent(out) :: sums(6)
+        double precision :: part(6)
+        integer :: ib
+        sums = 0.0d0
+        do ib = 1, nb
+          call ensure_device(ib,bunch(ib))
+          if(pb(ib)%n.gt.0) then
+            call d1_core(pb(ib)%p,pb(ib)%n,z0avg,part)
+            sums = sums + part
+          endif
+        enddo
+        end subroutine diag_pass1_gpu
+
+        subroutine d1_core(p,n,z0avg,sm)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(in) :: z0avg
+        real(8), intent(out) :: sm(6)
+        integer :: i
+        real(8) :: s1,s2,s3,s4,s5,s6,tmpgam,recpgamma,deltat,tmpx,tmpy
+        s1 = 0.0d0
+        s2 = 0.0d0
+        s3 = 0.0d0
+        s4 = 0.0d0
+        s5 = 0.0d0
+        s6 = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          tmpgam = sqrt(1.0d0+p(2,i)**2+p(4,i)**2+p(6,i)**2)
+          recpgamma = 1.0d0/tmpgam
+          deltat = (p(5,i)-z0avg)/(recpgamma*p(6,i))
+          tmpx = p(1,i)-recpgamma*p(2,i)*deltat
+          tmpy = p(3,i)-recpgamma*p(4,i)*deltat
+          s1 = s1 + tmpx
+          s2 = s2 + p(2,i)
+          s3 = s3 + tmpy
+          s4 = s4 + p(4,i)
+          s5 = s5 + p(5,i)
+          s6 = s6 + p(6,i)
+        enddo
+        sm(1) = s1
+        sm(2) = s2
+        sm(3) = s3
+        sm(4) = s4
+        sm(5) = s5
+        sm(6) = s6
+        end subroutine d1_core
+
+        !> the local 41 sums (tmplc, with tmplc(5) left at 0 for the caller),
+        !> the six local maxima and the local max r^2, as in the host loop.
+        !> m0 = (x0,px0,y0,py0,z0,pz0), the global means from pass 1.
+        subroutine diag_pass2_gpu(bunch,nb,z0avg,m0,tmplc,localmax,lcrmax)
+        implicit none
+        integer, intent(in) :: nb
+        type (BeamBunch), dimension(:), intent(inout) :: bunch
+        double precision, intent(in) :: z0avg,m0(6)
+        double precision, intent(out) :: tmplc(41),localmax(6),lcrmax
+        double precision :: a(41),amx(6),ar
+        integer :: ib
+        tmplc = 0.0d0
+        localmax = 0.0d0
+        lcrmax = 0.0d0
+        do ib = 1, nb
+          call ensure_device(ib,bunch(ib))
+          if(pb(ib)%n.gt.0) then
+            a = 0.0d0
+            amx = 0.0d0
+            ar = 0.0d0
+            call d2a_core(pb(ib)%p,pb(ib)%n,z0avg,a,ar)
+            call d2b_core(pb(ib)%p,pb(ib)%n,a,amx)
+            call d2c_core(pb(ib)%p,pb(ib)%n,z0avg,m0,a)
+            call d2d_core(pb(ib)%p,pb(ib)%n,z0avg,m0(6),a,amx)
+            tmplc = tmplc + a
+            localmax = max(localmax,amx)
+            lcrmax = max(lcrmax,ar)
+          endif
+        enddo
+        end subroutine diag_pass2_gpu
+
+        ! x, y (drifted) sums and powers, x*px, y*py, gamma sums, max r^2
+        subroutine d2a_core(p,n,z0avg,a,rmx)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(in) :: z0avg
+        real(8), intent(inout) :: a(41)
+        real(8), intent(out) :: rmx
+        integer :: i
+        real(8) :: tmpgam,recpgamma,deltat,tmpx,tmpy
+        real(8) :: s1,s7,s16,s17,s13,s3,s9,s20,s21,s14,s28,s29,rm
+        s1 = 0.0d0
+        s7 = 0.0d0
+        s16 = 0.0d0
+        s17 = 0.0d0
+        s13 = 0.0d0
+        s3 = 0.0d0
+        s9 = 0.0d0
+        s20 = 0.0d0
+        s21 = 0.0d0
+        s14 = 0.0d0
+        s28 = 0.0d0
+        s29 = 0.0d0
+        rm = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          tmpgam = sqrt(1.0d0+p(2,i)**2+p(4,i)**2+p(6,i)**2)
+          s28 = s28 + tmpgam
+          s29 = s29 + tmpgam**2
+          recpgamma = 1.0d0/tmpgam
+          deltat = (p(5,i)-z0avg)/(recpgamma*p(6,i))
+          tmpx = p(1,i)-recpgamma*p(2,i)*deltat
+          tmpy = p(3,i)-recpgamma*p(4,i)*deltat
+          s1 = s1 + tmpx
+          s7 = s7 + tmpx*tmpx
+          s16 = s16 + tmpx*tmpx*tmpx
+          s17 = s17 + tmpx*tmpx*tmpx*tmpx
+          s13 = s13 + tmpx*p(2,i)
+          s3 = s3 + tmpy
+          s9 = s9 + tmpy*tmpy
+          s20 = s20 + tmpy*tmpy*tmpy
+          s21 = s21 + tmpy*tmpy*tmpy*tmpy
+          s14 = s14 + tmpy*p(4,i)
+          rm = max(rm,tmpx**2+tmpy**2)
+        enddo
+        a(1) = s1
+        a(7) = s7
+        a(16) = s16
+        a(17) = s17
+        a(13) = s13
+        a(3) = s3
+        a(9) = s9
+        a(20) = s20
+        a(21) = s21
+        a(14) = s14
+        a(28) = s28
+        a(29) = s29
+        rmx = rm
+        end subroutine d2a_core
+
+        ! momentum sums and powers (px, py raw; pz about its mean as the host
+        ! loop does with pz0 from pass 1 is applied by the caller for 12, 26, 27)
+        subroutine d2b_core(p,n,a,amx)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(inout) :: a(41)
+        real(8), intent(out) :: amx(6)
+        integer :: i
+        real(8) :: s2,s8,s18,s19,s4,s10,s22,s23,s6,m1,m2,m3,m4,m6
+        s2 = 0.0d0
+        s8 = 0.0d0
+        s18 = 0.0d0
+        s19 = 0.0d0
+        s4 = 0.0d0
+        s10 = 0.0d0
+        s22 = 0.0d0
+        s23 = 0.0d0
+        s6 = 0.0d0
+        m1 = 0.0d0
+        m2 = 0.0d0
+        m3 = 0.0d0
+        m4 = 0.0d0
+        m6 = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          s2 = s2 + p(2,i)
+          s8 = s8 + p(2,i)*p(2,i)
+          s18 = s18 + p(2,i)*p(2,i)*p(2,i)
+          s19 = s19 + p(2,i)*p(2,i)*p(2,i)*p(2,i)
+          s4 = s4 + p(4,i)
+          s10 = s10 + p(4,i)*p(4,i)
+          s22 = s22 + p(4,i)*p(4,i)*p(4,i)
+          s23 = s23 + p(4,i)*p(4,i)*p(4,i)*p(4,i)
+          s6 = s6 + p(6,i)
+          m1 = max(m1,abs(p(1,i)))
+          m2 = max(m2,abs(p(2,i)))
+          m3 = max(m3,abs(p(3,i)))
+          m4 = max(m4,abs(p(4,i)))
+          m6 = max(m6,abs(p(6,i)))
+        enddo
+        a(2) = s2
+        a(8) = s8
+        a(18) = s18
+        a(19) = s19
+        a(4) = s4
+        a(10) = s10
+        a(22) = s22
+        a(23) = s23
+        a(6) = s6
+        amx(1) = m1
+        amx(2) = m2
+        amx(3) = m3
+        amx(4) = m4
+        amx(6) = m6
+        end subroutine d2b_core
+
+        ! cross correlations 30-41
+        subroutine d2c_core(p,n,z0avg,m0,a)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(in) :: z0avg,m0(6)
+        real(8), intent(inout) :: a(41)
+        integer :: i
+        real(8) :: x0,px0,y0,py0,z0,pz0
+        real(8) :: tmpgam,recpgamma,deltat,tmpx,tmpy
+        real(8) :: s30,s31,s32,s33,s34,s35,s36,s37,s38,s39,s40,s41
+        x0 = m0(1)
+        px0 = m0(2)
+        y0 = m0(3)
+        py0 = m0(4)
+        z0 = m0(5)
+        pz0 = m0(6)
+        s30 = 0.0d0
+        s31 = 0.0d0
+        s32 = 0.0d0
+        s33 = 0.0d0
+        s34 = 0.0d0
+        s35 = 0.0d0
+        s36 = 0.0d0
+        s37 = 0.0d0
+        s38 = 0.0d0
+        s39 = 0.0d0
+        s40 = 0.0d0
+        s41 = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          tmpgam = sqrt(1.0d0+p(2,i)**2+p(4,i)**2+p(6,i)**2)
+          recpgamma = 1.0d0/tmpgam
+          deltat = (p(5,i)-z0avg)/(recpgamma*p(6,i))
+          tmpx = p(1,i)-recpgamma*p(2,i)*deltat
+          tmpy = p(3,i)-recpgamma*p(4,i)*deltat
+          s30 = s30 + (tmpx-x0)*(tmpy-y0)
+          s31 = s31 + (tmpx-x0)*(p(4,i)-py0)
+          s32 = s32 + (p(2,i)-px0)*(tmpy-y0)
+          s33 = s33 + (p(2,i)-px0)*(p(4,i)-py0)
+          s34 = s34 + (tmpx-x0)*(p(5,i)-z0)
+          s35 = s35 + (tmpx-x0)*(p(6,i)-pz0)
+          s36 = s36 + (p(5,i)-z0)*(p(2,i)-px0)
+          s37 = s37 + (p(2,i)-px0)*(p(6,i)-pz0)
+          s38 = s38 + (tmpy-y0)*(p(5,i)-z0)
+          s39 = s39 + (tmpy-y0)*(p(6,i)-pz0)
+          s40 = s40 + (p(5,i)-z0)*(p(4,i)-py0)
+          s41 = s41 + (p(4,i)-py0)*(p(6,i)-pz0)
+        enddo
+        a(30) = s30
+        a(31) = s31
+        a(32) = s32
+        a(33) = s33
+        a(34) = s34
+        a(35) = s35
+        a(36) = s36
+        a(37) = s37
+        a(38) = s38
+        a(39) = s39
+        a(40) = s40
+        a(41) = s41
+        end subroutine d2c_core
+
+        ! z about z0avg, pz about pz0, and max |z - z0avg|
+        subroutine d2d_core(p,n,z0avg,pz0,a,amx)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(in) :: z0avg,pz0
+        real(8), intent(inout) :: a(41)
+        real(8), intent(inout) :: amx(6)
+        integer :: i
+        real(8) :: s11,s24,s25,s15,s12,s26,s27,m5
+        s11 = 0.0d0
+        s24 = 0.0d0
+        s25 = 0.0d0
+        s15 = 0.0d0
+        s12 = 0.0d0
+        s26 = 0.0d0
+        s27 = 0.0d0
+        m5 = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          s11 = s11 + (p(5,i)-z0avg)**2
+          s24 = s24 + ((p(5,i)-z0avg)**3)
+          s25 = s25 + (p(5,i)-z0avg)**4
+          s15 = s15 + (p(5,i)-z0avg)*(p(6,i)-pz0)
+          s12 = s12 + (p(6,i)-pz0)**2
+          s26 = s26 + (p(6,i)-pz0)**3
+          s27 = s27 + (p(6,i)-pz0)**4
+          m5 = max(m5,abs(p(5,i)-z0avg))
+        enddo
+        a(11) = s11
+        a(24) = s24
+        a(25) = s25
+        a(15) = s15
+        a(12) = s12
+        a(26) = s26
+        a(27) = s27
+        amx(5) = m5
+        end subroutine d2d_core
 
       end module ParticleGPUclass

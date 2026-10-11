@@ -2444,7 +2444,8 @@
           !output for every 5 steps
           if(mod(i,5).eq.0) then
 #ifdef USE_GPU
-          if(gpupart) call ensure_host_all(Ebunch,Nbunch)
+          !Flagdiag = 2 sums the moments on the device (C1)
+          if(gpupart .and. Flagdiag.ne.2) call ensure_host_all(Ebunch,Nbunch)
 #endif
 
           if(Flagdiag.eq.1) then
