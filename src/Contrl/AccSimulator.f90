@@ -757,6 +757,10 @@
         logical :: gpuwarned = .false.
         character(len=96) :: gpuwhy
         integer, dimension(3) :: gmesh
+!for the GPU bend loop (D1): gpubend selects it for one bend
+        logical :: gpubend = .false., gpubendwarned = .false.
+        double precision :: bcs,bss,bcs2,bss2,bb0,bp5,tbend0
+        integer :: bslot
 !--------------
 ! dielectric wakefield module implemented by Daniel Mihalcea:
 ! PRST-AB, 15, 081304, (2012).
@@ -2515,10 +2519,6 @@
           dGspread = 1.0
 
           else !into bending magnet
-#ifdef USE_GPU
-            if(gpupart) call ensure_host_all(Ebunch,Nbunch)
-#endif
-
             zorgin = zBlnelem(1,idbd) 
             zorgin2 = zBlnelem(2,idbd) 
             if(fldmp(idrfile(3,idbd))%Fcoeft(1) > 0) then
@@ -2526,6 +2526,34 @@
             else
               flagcsr = 0
             endif
+            !the bend loop runs on the GPU when the particles are resident there
+            !(D1.5). Every input is the same on every rank.
+            gpubend = .false.
+#ifdef USE_GPU
+            if(gpupart) then
+              gpubend = .true.
+              gpuwhy = ""
+              if(Nbunch.ne.1) then
+                gpubend = .false.
+                gpuwhy = "Nbunch > 1"
+              else if(Flagbc.ne.1) then
+                gpubend = .false.
+                gpuwhy = "Flagbc /= 1"
+              else if(flagcsr.eq.1) then
+                gpubend = .false.
+                gpuwhy = "CSR in the bend (not on the GPU yet)"
+              endif
+              if(.not.gpubend) then
+                if(.not.gpubendwarned .and. myid.eq.0) then
+                  print*,"GPU particle path: bend on the host: ",trim(gpuwhy)
+                  gpubendwarned = .true.
+                endif
+                call ensure_host_all(Ebunch,Nbunch)
+              endif
+              call count_bend(gpubend)
+              if(gpubend) call starttime_Timer(tbend0)
+            endif
+#endif
             gamin = fldmp(idrfile(3,idbd))%Fcoeft(2)
            
             zz1 = fldmp(idrfile(3,idbd))%Fcoeft(21) !effective starting location of bend
@@ -2548,33 +2576,57 @@
             !designed energy so that the reference trajectory through the bend
             !is correct.
             do ib = 1, Nbunch
+#ifdef USE_GPU
+              if(gpubend) then
+                call convEntr_gpu(ib,Ebunch(ib),zorgin,gamin)
+              else
+#endif
               call convEntr_BeamBunch(Ebunch(ib),zorgin,gamin)
+#ifdef USE_GPU
+              endif
+#endif
             enddo
             zz = Ebunch(ibb)%refptcl(5)*Scxlt - 0.5*vref*dtless*Scxlt
 
             !//back half step
             do ib = 1, Nbunch
+#ifdef USE_GPU
+              if(gpubend) then
+                call driftbackhalf_gpu(ib,Ebunch(ib),dtless)
+              else
+#endif
               call driftbackhalf_BeamBunch(Ebunch(ib),t,dtless)
+#ifdef USE_GPU
+              endif
+#endif
             enddo
             t = t - 0.5*dtless*Dt
 
             Flagbctmp = 1
+            !on the GPU path exg..bzg stay allocated at their old size, which
+            !is what a later fallback step expects (it deallocates them first)
+            if(.not.gpubend) then
 #ifdef USE_GPU
-            !the GPU steps never set the local mesh sizes (only the host mesh
-            !steps do), and a run with no fallback steps reaches a bend with
-            !the initial values: take them from the current domain
+            !the GPU steps never set the local mesh sizes nor kadd/jadd (only the
+            !host mesh steps do), and a run with no fallback steps reaches a bend
+            !with the initial values: take them from the current domain. kadd
+            !puts the CSR wake on the right mesh planes (kst = zdisp+kz-kadd).
             if(gpupart) then
               call getlcmnum_CompDom(Ageom,lcgrid)
               Nxlocal = lcgrid(1)
               if(npy.gt.1) then
                 Nylocal = lcgrid(2) + 2
+                jadd = 1
               else
                 Nylocal = lcgrid(2)
+                jadd = 0
               endif
               if(npx.gt.1) then
                 Nzlocal = lcgrid(3) + 2
+                kadd = 1
               else
                 Nzlocal = lcgrid(3)
+                kadd = 0
               endif
             endif
 #endif
@@ -2590,13 +2642,60 @@
             allocate(bxg(Nxlocal,Nylocal,Nzlocal))
             allocate(byg(Nxlocal,Nylocal,Nzlocal))
             allocate(bzg(Nxlocal,Nylocal,Nzlocal))
+            endif
             do ii = 1, ntstep
 
               do ib = 1, Nbunch
+#ifdef USE_GPU
+                if(gpubend) then
+                  call drifthalfBd_gpu(ib,Ebunch(ib),dtless)
+                else
+#endif
                 call drifthalfBd_BeamBunch(Ebunch(ib),t,dtless)
+#ifdef USE_GPU
+                endif
+#endif
               enddo
               t = t + 0.5*dtless*Dt
 
+#ifdef USE_GPU
+              if(gpubend) then
+              !-------- the bend step on the GPU (D1.5), one bunch ----------
+              ib = 1
+              ptref = Ebunch(ib)%refptcl
+              gammazavg = sqrt(1.0+ptref(2)**2+ptref(6)**2)
+              !the rotation angle of the reference particle before its kick;
+              !rotbackT and the field rotation use these same values
+              bcs = ptref(6)/sqrt(ptref(6)**2 + ptref(2)**2)
+              bss = ptref(2)/sqrt(ptref(6)**2 + ptref(2)**2)
+              call rottoT_gpu(ib,Ebunch(ib),bcs,bss,ptrange,poscent)
+              bslot = idrfile(3,idbd)
+              call getparam_BeamLineElem(Blnelem(idbd),3,bb0)
+              call getparam_BeamLineElem(Blnelem(idbd),5,bp5)
+              if(Bcurr.gt.1.0e-10) then
+                call update_CompDom(Ageom,ptrange,grid2d,Flagbctmp)
+                call getmnum_CompDom(Ageom,gmesh)
+                call getmsize_CompDom(Ageom,msize)
+                call getrange_CompDom(Ageom,range)
+                call mesh_zero_gpu(gmesh(1),gmesh(2),gmesh(3))
+                !tmpflag = 0 in the bend loop whatever the sign of the momentum,
+                !so pass gbetz = 1; no image (flagImage = 0, zshift = 0)
+                call mesh_fields_gpu(ib,Ebunch(ib),gmesh(1),gmesh(2),gmesh(3),&
+                       range,msize,gammazavg,1.0d0,flagpos,0,0.0d0,totnp)
+                call kickref_Bd_BeamBunch(Ebunch(ib)%refptcl,t,Ebunch(ib)%Charge,&
+                       Ebunch(ib)%Mass,dtless,Blnelem,idrfile,idbd,fldmp,bcs2,bss2)
+                call kick_bend_gpu(ib,Ebunch(ib),.true.,bcs2,bss2,dtless,bslot,&
+                       bb0,bp5,gmesh(1),gmesh(2),gmesh(3),range,msize)
+              else
+                call kickref_Bd_BeamBunch(Ebunch(ib)%refptcl,t,Ebunch(ib)%Charge,&
+                       Ebunch(ib)%Mass,dtless,Blnelem,idrfile,idbd,fldmp,bcs2,bss2)
+                call kick_bend_gpu(ib,Ebunch(ib),.false.,bcs2,bss2,dtless,bslot,&
+                       bb0,bp5,1,1,1,range,msize)
+              endif
+              call check_gpu_error()
+              call rotbackT_gpu(ib,Ebunch(ib),bcs,bss)
+              else
+#endif
               do ib = 1, Nbunch
                 ptref = Ebunch(ib)%refptcl
                 gammazavg = sqrt(1.0+ptref(2)**2+ptref(6)**2)
@@ -2753,9 +2852,20 @@
                 call rotbackT_BeamBunch(Ebunch(ib),ptref)
 
               enddo
+#ifdef USE_GPU
+              endif
+#endif
 
               do ib = 1, Nbunch
+#ifdef USE_GPU
+                if(gpubend) then
+                  call drifthalfBd_gpu(ib,Ebunch(ib),dtless)
+                else
+#endif
                 call drifthalfBd_BeamBunch(Ebunch(ib),t,dtless)
+#ifdef USE_GPU
+                endif
+#endif
               enddo
               t = t + 0.5*dtless*Dt
 
@@ -2763,7 +2873,7 @@
               vref = sqrt((Ebunch(ibb)%refptcl(2)/gam)**2+(Ebunch(ibb)%refptcl(6)/gam)**2)
               zz = zz + vref*dtless*Scxlt
 
-              call diagnostic1avgB_Output(t,Ebunch,Nbunch,.true.)
+              call diagnostic1avgB_Output(t,Ebunch,Nbunch,.not.gpubend)
               print*,"zz: ",zz,zorgin2
 
               if(zz.gt.(zorgin2-zorgin)) then
@@ -2774,10 +2884,23 @@
             zorgin = zorgin2 
             do ib =  1, Nbunch
               !call convExit_BeamBunch(Ebunch(ib))
+#ifdef USE_GPU
+              if(gpubend) then
+                call convExit_gpu(ib,Ebunch(ib),zorgin2)
+              else
+#endif
               call convExit_BeamBunch(Ebunch(ib),zorgin2)
+#ifdef USE_GPU
+              endif
+#endif
             enddo
 #ifdef USE_GPU
-            if(gpupart) call mark_host_newer_all(Nbunch)
+            !after the GPU loop the device copy is the newer one
+            if(gpubend) then
+              t_bendgpu = t_bendgpu + elapsedtime_Timer(tbend0)
+            else if(gpupart) then
+              call mark_host_newer_all(Nbunch)
+            endif
 #endif
           endif
 

@@ -34,6 +34,7 @@
         public :: kick_mesh_core, set_device_mesh, rho_dev, phi_dev, phiimg_dev
         public :: ex_dev, ey_dev, ez_dev, bx_dev, by_dev
         public :: diag_gpu_ready, diag_zsum_gpu, diag_pass1_gpu, diag_pass2_gpu
+        public :: count_bend
         public :: rottoT_gpu, rotbackT_gpu, convEntr_gpu, convExit_gpu
         public :: driftbackhalf_gpu, drifthalfBd_gpu, kick_bend_gpu
         public :: diagB_pass1_gpu, diagB_pass2_gpu
@@ -48,6 +49,7 @@
 
         integer, save :: nbuf = 0
         integer, save :: nsync_up = 0, nsync_down = 0, nfallback = 0
+        integer, save :: nbend_gpu = 0, nbend_host = 0
         integer, save :: envflag = -1
 
         ! mesh arrays (global grid, B2.4)
@@ -118,6 +120,17 @@
         implicit none
         nfallback = nfallback + 1
         end subroutine count_fallback
+
+        !> one more type-4 bend, run on the GPU or on the host (D1.5)
+        subroutine count_bend(ongpu)
+        implicit none
+        logical, intent(in) :: ongpu
+        if(ongpu) then
+          nbend_gpu = nbend_gpu + 1
+        else
+          nbend_host = nbend_host + 1
+        endif
+        end subroutine count_bend
 
         !-------------------------------------------------------------
         ! residency (B2.3)
@@ -228,9 +241,10 @@
         real(8) :: pcart(3)
         ncart = cartout_count(icart,pcart)
         if(myid.eq.0) then
-          write(*,'(a,i0,a,i0,a,i0,a,i0)') " GPU particle path: host->device copies ", &
+          write(*,'(a,i0,a,i0,a,i0,a,i0,a,i0,a,i0)') " GPU particle path: host->device copies ", &
                 nsync_up,", device->host copies ",nsync_down, &
                 ", CPU fallback steps ",nfallback, &
+                ", bends on the GPU ",nbend_gpu,", on the host ",nbend_host, &
                 ", 111 out-of-map points ",ncart
           if(ncart.gt.0) write(*,'(a,i0,a,3es14.6)') &
             "   first 111 out-of-map point: particle ",icart," at ",pcart
