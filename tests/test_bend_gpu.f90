@@ -12,6 +12,7 @@
 !   rottoT_gpu, rotbackT_gpu, convEntr_gpu, convExit_gpu, driftbackhalf_gpu,
 !   drifthalfBd_gpu vs the BeamBunch routines
 !   diagB_pass1_gpu, diagB_pass2_gpu vs the host loops of diagnostic1avgB_Output
+!   bendpt2pt_gpu vs kickpt2ptBd_BeamBunch (N-body in the bend frame, D1.12; with and without CSR)
 module tbend_kernels
   use cudafor
   use FieldmapGPUclass
@@ -72,6 +73,7 @@ program test_bend_gpu
   call test_cart()
   call test_bend_kernels()
   call test_diagB()
+  call test_bendnbody()
 
   if(nfail.eq.0) then
     print*,"test_bend_gpu: ALL PASS"
@@ -647,6 +649,60 @@ contains
     call report("diagB max r^2 (equal)",(/rrref/),(/lcr/),1,0.0d0)
     deallocate(bg(1)%Pts1)
   end subroutine test_diagB
+
+  subroutine test_bendnbody()
+    type (BeamBunch) :: bc, bg
+    type (BeamLineElem) :: be1(1)
+    integer :: idr1(3,1), n, seed, k, icsr, nzw
+    double precision :: refc(6), refg(6), cs, ss, tg, dt, totchrg, r0, zminw, hzw0, zmaxw
+    double precision :: ezw(64), kmax, dk, pscale
+    double precision, allocatable :: p0(:,:)
+    character(len=40) :: nm
+    n = 20000
+    seed = 8080
+    nzw = 64
+    be1(1) = assign_BeamLineElem(dp(1))
+    idr1(:,1) = (/4,15,2/)
+    tg = 1.0d-10
+    dt = 1.0d0
+    totchrg = 1.0d-10
+    r0 = 1.0d-4
+    allocate(p0(9,n))
+    do icsr = 0, 1
+      call make_bend_bunch(bc,n,seed,-0.02d0,0.32d0,0.012d0)   ! includes z < 0
+      call copy_bunch(bc,bg)
+      p0 = bc%Pts1
+      refc = bc%refptcl
+      call kickref_Bd_BeamBunch(refc,tg,bc%Charge,bc%Mass,dt,be1,idr1,1,fld,cs,ss)
+      zminw = minval(bc%Pts1(5,:)) - 1.0d-3
+      zmaxw = maxval(bc%Pts1(5,:)) + 1.0d-3
+      hzw0 = (zmaxw-zminw)*1.0000001d0/(nzw-1)
+      do k = 1, nzw
+        ezw(k) = 1.0d8*sin(0.3d0*k)   ! large enough that the wake kick is of the size of the space-charge kick
+      enddo
+      call kickpt2ptBd_BeamBunch(n,bc%Pts1,tg,bc%Charge,bc%Mass,dt,be1,idr1,1,fld, &
+                                 cs,ss,totchrg,r0,n,n,icsr,ezw,nzw,zminw,hzw0)
+      call mark_host_newer(1)
+      call bendpt2pt_gpu(1,bg,cs,ss,dt,2,0.3d0,0.0125d0,totchrg,r0,n,n,icsr,ezw,nzw,zminw,hzw0)
+      call ensure_host(1,bg)
+      write(nm,'(a,i1)') "bend N-body csr=",icsr
+      kmax = 0.0d0
+      dk = 0.0d0
+      do k = 2, 6, 2
+        kmax = max(kmax,maxval(abs(bc%Pts1(k,:)-p0(k,:))))
+        dk = max(dk,maxval(abs(bc%Pts1(k,:)-bg%Pts1(k,:))))
+      enddo
+      pscale = maxval(abs(bc%Pts1(6,:)))
+      write(*,'(a34,2x,a,es10.3,a,es10.3,a,es10.3)') trim(nm),"max diff/largest kick ",dk/kmax, &
+        "  largest kick ",kmax,"  max diff/|p| ",dk/pscale
+      if(dk/pscale.gt.4.0d-16) then
+        print*,"   FAIL (tol 4e-16 of |p|; the plan's 1e-13 of the largest kick is the momentum floor, see item 2)"
+        nfail = nfail + 1
+      endif
+      call check_gpu_error()
+      deallocate(bc%Pts1,bg%Pts1)
+    enddo
+  end subroutine test_bendnbody
 
   subroutine run_out(zedge,len,x,y,z,n)
     double precision, intent(in) :: zedge,len,x(n),y(n),z(n)

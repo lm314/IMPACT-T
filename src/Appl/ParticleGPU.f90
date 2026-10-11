@@ -34,7 +34,7 @@
         public :: kick_mesh_core, set_device_mesh, rho_dev, phi_dev, phiimg_dev
         public :: ex_dev, ey_dev, ez_dev, bx_dev, by_dev
         public :: diag_gpu_ready, diag_zsum_gpu, diag_pass1_gpu, diag_pass2_gpu
-        public :: count_bend, csr_hist_gpu, csr_addez_gpu
+        public :: count_bend, csr_hist_gpu, csr_addez_gpu, bendpt2pt_gpu
         public :: rottoT_gpu, rotbackT_gpu, convEntr_gpu, convExit_gpu
         public :: driftbackhalf_gpu, drifthalfBd_gpu, kick_bend_gpu
         public :: diagB_pass1_gpu, diagB_pass2_gpu
@@ -982,33 +982,53 @@
         endif
         end subroutine k_build_src
 
-        !> kickpt2ptImg_BeamBunch: sources built on the device; with one
-        !> rank they are used in place, otherwise gathered through the host.
-        subroutine kickpt2pt_gpu(ib,bunch,tg,dt,totchrg,r0,npttot,nptrue, &
-                                 flagimgnow)
+        !> k_build_src for the bend frame (D1.12): every particle is emitted
+        attributes(global) subroutine k_build_src_all(p,n,srcloc,targets)
+        implicit none
+        integer, value :: n
+        real(8), device :: p(9,n)
+        real(8), device :: srcloc(10,n),targets(4,n)
+        integer :: i
+        real(8) :: gam
+        i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+        if(i.gt.n) return
+        gam = sqrt(1.0d0+p(2,i)**2+p(4,i)**2+p(6,i)**2)
+        srcloc(1,i) = p(1,i)
+        srcloc(2,i) = p(3,i)
+        srcloc(3,i) = p(5,i)
+        srcloc(4,i) = p(2,i)/gam
+        srcloc(5,i) = p(4,i)/gam
+        srcloc(6,i) = p(6,i)/gam
+        srcloc(7,i) = gam
+        srcloc(8,i) = 1.0d0
+        srcloc(9,i) = gam*gam/(gam+1.0d0)
+        srcloc(10,i) = gam/(gam+1.0d0)
+        targets(1,i) = p(1,i)
+        targets(2,i) = p(3,i)
+        targets(3,i) = p(5,i)
+        targets(4,i) = 1.0d0
+        end subroutine k_build_src_all
+
+        !> the sources, their gather and pt2ptFields_dev of kickpt2ptImg_BeamBunch:
+        !> fields (not yet scaled by coefE) in fex..fbz.  allemitted: every
+        !> particle is a source and a target (bend frame, D1.12), else only
+        !> z > 0.  With one rank the sources are used in place, otherwise
+        !> gathered through the host.
+        subroutine pt2pt_fields_gpu(ib,bunch,allemitted,image,r0,npttot)
         implicit none
         include 'mpif.h'
-        integer, intent(in) :: ib,npttot,nptrue,flagimgnow
+        integer, intent(in) :: ib,npttot
+        logical, intent(in) :: allemitted,image
         type (BeamBunch), intent(inout) :: bunch
-        double precision, intent(in) :: tg,dt,totchrg,r0
-        integer :: n,nproc,myid,ierr,i,sgn,myoffset
+        double precision, intent(in) :: r0
+        integer :: n,nproc,myid,ierr,i,myoffset
         integer, allocatable :: recvcounts(:),displs(:)
         double precision, allocatable :: hsrc(:,:),hall(:,:)
-        double precision :: coefE,t0,t1
-        logical :: image
+        double precision :: t1
 
-        call ensure_device(ib,bunch)
         n = pb(ib)%n
         call MPI_COMM_RANK(MPI_COMM_WORLD,myid,ierr)
         call MPI_COMM_SIZE(MPI_COMM_WORLD,nproc,ierr)
-        if(bunch%Charge.gt.0.0) then
-          sgn = 1
-        else
-          sgn = -1
-        endif
-        coefE = 1.0d0/(4*Pi*Epsilon0*Scxlt*Scxlt)*sgn*totchrg/nptrue
-
-        call starttime_Timer(t0)
         if(n.gt.ncap_nb) then
           if(allocated(srcloc_d)) deallocate(srcloc_d,targets_d,fex,fey,fez,fbx,fby,fbz)
           ncap_nb = n
@@ -1016,7 +1036,11 @@
           allocate(fex(n),fey(n),fez(n),fbx(n),fby(n),fbz(n))
         endif
         if(n.gt.0) then
-          call k_build_src<<<(n+127)/128,128>>>(pb(ib)%p,n,srcloc_d,targets_d)
+          if(allemitted) then
+            call k_build_src_all<<<(n+127)/128,128>>>(pb(ib)%p,n,srcloc_d,targets_d)
+          else
+            call k_build_src<<<(n+127)/128,128>>>(pb(ib)%p,n,srcloc_d,targets_d)
+          endif
         endif
 
         allocate(recvcounts(nproc),displs(nproc))
@@ -1028,7 +1052,6 @@
         enddo
         myoffset = displs(myid+1)
 
-        image = (flagimgnow.eq.1)
         if(nproc.eq.1) then
           call starttime_Timer(t1)
           call pt2ptFields_dev(n,targets_d,myoffset,npttot,srcloc_d,image,r0, &
@@ -1052,6 +1075,29 @@
           t_pt2ptfields = t_pt2ptfields + elapsedtime_Timer(t1)
         endif
         deallocate(recvcounts,displs)
+        end subroutine pt2pt_fields_gpu
+
+        !> kickpt2ptImg_BeamBunch: fields (pt2pt_fields_gpu) and the kick.
+        subroutine kickpt2pt_gpu(ib,bunch,tg,dt,totchrg,r0,npttot,nptrue, &
+                                 flagimgnow)
+        implicit none
+        integer, intent(in) :: ib,npttot,nptrue,flagimgnow
+        type (BeamBunch), intent(inout) :: bunch
+        double precision, intent(in) :: tg,dt,totchrg,r0
+        integer :: n,sgn
+        double precision :: coefE,t0
+
+        call ensure_device(ib,bunch)
+        n = pb(ib)%n
+        if(bunch%Charge.gt.0.0) then
+          sgn = 1
+        else
+          sgn = -1
+        endif
+        coefE = 1.0d0/(4*Pi*Epsilon0*Scxlt*Scxlt)*sgn*totchrg/nptrue
+
+        call starttime_Timer(t0)
+        call pt2pt_fields_gpu(ib,bunch,.false.,flagimgnow.eq.1,r0,npttot)
 
         if(n.gt.0) then
           call k_kick_pt2pt<<<(n+127)/128,128>>>(pb(ib)%p,n,fex,fey,fez,fbx,fby, &
@@ -1852,6 +1898,77 @@
         call sync_gpu()
         t_kickgpu = t_kickgpu + elapsedtime_Timer(t0)
         end subroutine kick_bend_gpu
+
+
+        !> kickpt2ptBd_BeamBunch's particle loop: pt2ptFields_dev fields (in
+        !> fex..fbz, scaled here by coefE), the dipole of the bend alone, the
+        !> optional CSR wake interpolated with the histogram's weights.
+        attributes(global) subroutine k_kick_bend_pt2pt(p,n,fx,fy,fz,gx,gy,gz, &
+              coefE,csrflag,ezw,nzw,zminw,hzw0,cs,ss,dt,slot,b0,p5,scxlt_,clight_)
+        implicit none
+        integer, value :: n,nzw,csrflag,slot
+        real(8), value :: coefE,zminw,hzw0,cs,ss,dt,b0,p5,scxlt_,clight_
+        real(8), device :: p(9,n)
+        real(8), device :: fx(n),fy(n),fz(n),gx(n),gy(n),gz(n),ezw(nzw)
+        integer :: i,iizz
+        real(8) :: pos1,pos2,pos3,coefLz,ex,ey,ez,bx,by,bz,ef(6),eeff,ezc
+        i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+        if(i.gt.n) return
+        pos1 = (cs*p(1,i)+ss*p(5,i))*scxlt_
+        pos2 = p(3,i)*scxlt_
+        pos3 = (-ss*p(1,i) + cs*p(5,i))*scxlt_
+        coefLz = p(7,i)*scxlt_
+        call fld_dipole(pos1,pos2,pos3,slot,b0,p5,ef)
+        ezc = coefE*fz(i)
+        if(csrflag.eq.1) then
+          iizz = (p(5,i)-zminw)/hzw0 + 1
+          eeff = ((zminw-p(5,i))+iizz*hzw0)/hzw0
+          ezc = ezc + (ezw(iizz)*eeff + ezw(iizz+1)*(1.0d0-eeff))
+        endif
+        ex = coefE*fx(i)+ef(1)*cs - ef(3)*ss
+        ey = coefE*fy(i)+ef(2)
+        ez = ezc+ef(1)*ss + ef(3)*cs
+        bx = coefE*gx(i)/clight_+ef(4)*cs - ef(6)*ss
+        by = coefE*gy(i)/clight_+ef(5)
+        bz = coefE*gz(i)/clight_+(ef(4)*ss + ef(6)*cs)
+        call boris(p(2,i),p(4,i),p(6,i),coefLz,ex,ey,ez,bx,by,bz,dt,clight_)
+        end subroutine k_kick_bend_pt2pt
+
+        !> The N-body particle kick of a bend step (D1.12): pair fields of all
+        !> particles in the rotated frame (image off, every particle a source),
+        !> then k_kick_bend_pt2pt.  ezwake(1:nzw) is used when csrflag = 1.
+        subroutine bendpt2pt_gpu(ib,bunch,cs,ss,dt,slot,b0,p5,totchrg,r0, &
+                                 npttot,nptrue,csrflag,ezwake,nzw,zminw,hzw0)
+        implicit none
+        integer, intent(in) :: ib,slot,npttot,nptrue,csrflag,nzw
+        type (BeamBunch), intent(inout) :: bunch
+        double precision, intent(in) :: cs,ss,dt,b0,p5,totchrg,r0,zminw,hzw0
+        double precision, intent(in) :: ezwake(nzw)
+        real(8), device, allocatable :: ezw_d(:)
+        integer :: n,sgn
+        double precision :: coefE,t0
+        call ensure_device(ib,bunch)
+        n = pb(ib)%n
+        if(bunch%Charge.gt.0.0) then
+          sgn = 1
+        else
+          sgn = -1
+        endif
+        coefE = 1.0d0/(4*Pi*Epsilon0*Scxlt*Scxlt)*sgn*totchrg/nptrue
+        call starttime_Timer(t0)
+        call pt2pt_fields_gpu(ib,bunch,.true.,.false.,r0,npttot)
+        allocate(ezw_d(max(nzw,1)))
+        ezw_d(1:nzw) = ezwake
+        if(n.gt.0) then
+          call k_kick_bend_pt2pt<<<(n+127)/128,128>>>(pb(ib)%p,n,fex,fey,fez,fbx, &
+               fby,fbz,coefE,csrflag,ezw_d,nzw,zminw,hzw0,cs,ss,dt,slot,b0,p5, &
+               Scxlt,Clight)
+        endif
+        pb(ib)%state = 1
+        call sync_gpu()
+        deallocate(ezw_d)
+        t_kickgpu = t_kickgpu + elapsedtime_Timer(t0)
+        end subroutine bendpt2pt_gpu
 
         !-------------------------------------------------------------
         ! D1.7: diagnostic1avgB_Output on the device

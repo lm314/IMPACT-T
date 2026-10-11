@@ -759,7 +759,8 @@
         integer, dimension(3) :: gmesh
 !for the GPU bend loop (D1): gpubend selects it for one bend
         logical :: gpubend = .false., gpubendwarned = .false.
-        double precision :: bcs,bss,bcs2,bss2,bb0,bp5,tbend0,tcsr0
+        double precision :: bcs,bss,bcs2,bss2,bb0,bp5,tbend0,tcsr0,hzw0,totchrgb
+        integer :: bendpt2pt = 0
         integer :: bslot
 !--------------
 ! dielectric wakefield module implemented by Daniel Mihalcea:
@@ -2526,6 +2527,12 @@
             else
               flagcsr = 0
             endif
+            !point-to-point (N-body) space charge in the bend when it is on at
+            !the entrance (a -15 before the bend, a -19 after it) (D1.12)
+            bendpt2pt = flagpt2pt
+            if(bendpt2pt.eq.1 .and. myid.eq.0) then
+              print*,"bend ",idbd,": point-to-point space charge, r0 = ",r0
+            endif
             !the bend loop runs on the GPU when the particles are resident there
             !(D1.5). Every input is the same on every rank.
             gpubend = .false.
@@ -2669,7 +2676,47 @@
               bslot = idrfile(3,idbd)
               call getparam_BeamLineElem(Blnelem(idbd),3,bb0)
               call getparam_BeamLineElem(Blnelem(idbd),5,bp5)
-              if(Bcurr.gt.1.0e-10) then
+              if(Bcurr.gt.1.0e-10 .and. bendpt2pt.eq.1) then
+                !N-body: no deposit, solve or mesh; update_CompDom gives the
+                !beam range for the CSR histogram (D1.12)
+                call update_CompDom(Ageom,ptrange,grid2d,Flagbctmp)
+                ezwake = 0.0
+                if(flagcsr.eq.1) then
+                  call starttime_Timer(tcsr0)
+                  call getrange_CompDom(Ageom,grange)
+                  hzwake = (grange(6)-grange(5))*1.0000001/(Nz-1) !avoid over index
+                  hzw0 = hzwake
+                  call csr_hist_gpu(ib,Ebunch(ib),Nz,grange(5),hzwake,denszlc)
+                  call check_gpu_error()
+                  densz = 0.0
+                  call MPI_ALLREDUCE(denszlc,densz,Nz,MPI_DOUBLE_PRECISION,&
+                                 MPI_SUM,commcol,ierr)
+                  do kz = 1, Nz
+                    sendensz(kz,1) = densz(kz)
+                  enddo
+                  call MPI_ALLREDUCE(sendensz,recvdensz,Nz,MPI_DOUBLE_PRECISION,&
+                                 MPI_SUM,commrow,ierr)
+                  hzwake = hzwake*Scxlt
+                  do kz = 1, Nz
+                    densz(kz) = recvdensz(kz,1)*Ebunch(ib)%Current/Scfreq/Np(ib)/hzwake*&
+                                  Ebunch(ib)%Charge/abs(Ebunch(ib)%Charge)
+                  enddo
+                  zwkmin = (grange(5)-poscent)*Scxlt + (zz - zz1)
+                  denszp = 0.0d0
+                  denszpp = 0.0d0
+                  call csrwakeTrIGF_FieldQuant(Nz,r0bend,zwkmin,hzwake,&
+                                 bendlen,densz,denszp,denszpp,gamin,ezwake)
+                  t_csr = t_csr + elapsedtime_Timer(tcsr0)
+                else
+                  grange(5) = 0.0d0
+                  hzw0 = 1.0d0
+                endif
+                call kickref_Bd_BeamBunch(Ebunch(ib)%refptcl,t,Ebunch(ib)%Charge,&
+                       Ebunch(ib)%Mass,dtless,Blnelem,idrfile,idbd,fldmp,bcs2,bss2)
+                totchrgb = Ebunch(ib)%Current/Bfreq
+                call bendpt2pt_gpu(ib,Ebunch(ib),bcs2,bss2,dtless,bslot,bb0,bp5,&
+                       totchrgb,r0,Np(ib),Np(ib),flagcsr,ezwake,Nz,grange(5),hzw0)
+              else if(Bcurr.gt.1.0e-10) then
                 call update_CompDom(Ageom,ptrange,grid2d,Flagbctmp)
                 call getmnum_CompDom(Ageom,gmesh)
                 call getmsize_CompDom(Ageom,msize)
@@ -2734,7 +2781,52 @@
                 !//go to the local "ptref" coordinates
                 call rottoT_BeamBunch(Ebunch(ib),ptref,ptrange,poscent)
 
-                if(Bcurr.gt.1.0e-10) then
+                if(Bcurr.gt.1.0e-10 .and. bendpt2pt.eq.1) then
+                  !N-body space charge in the bend (D1.12): no ptsmv2, deposit
+                  !or solve; the range is only for the CSR histogram
+                  call update_CompDom(Ageom,ptrange,grid2d,Flagbctmp)
+                  ezwake = 0.0
+                  grange(5) = 0.0d0
+                  hzw0 = 1.0d0
+                  if(flagcsr.eq.1) then
+                    call getrange_CompDom(Ageom,grange)
+                    hzwake = (grange(6)-grange(5))*1.0000001/(Nz-1) !avoid over index
+                    hzw0 = hzwake
+                    denszlc = 0.0
+                    do ipt = 1, Nplocal(ib)
+                      iizz = (Ebunch(ib)%Pts1(5,ipt)-grange(5))/hzwake + 1
+                      eeff = ((grange(5)-Ebunch(ib)%Pts1(5,ipt))+iizz*hzwake)/hzwake
+                      iizz1 = iizz + 1
+                      denszlc(iizz) = denszlc(iizz) + eeff
+                      denszlc(iizz1) = denszlc(iizz1) + 1.0d0 - eeff
+                    enddo
+                    densz = 0.0
+                    call MPI_ALLREDUCE(denszlc,densz,Nz,MPI_DOUBLE_PRECISION,&
+                                   MPI_SUM,commcol,ierr)
+                    do kz = 1, Nz
+                      sendensz(kz,1) = densz(kz)
+                    enddo
+                    call MPI_ALLREDUCE(sendensz,recvdensz,Nz,MPI_DOUBLE_PRECISION,&
+                                   MPI_SUM,commrow,ierr)
+                    hzwake = hzwake*Scxlt
+                    do kz = 1, Nz
+                      densz(kz) = recvdensz(kz,1)*Ebunch(ib)%Current/Scfreq/Np(ib)/hzwake*&
+                                    Ebunch(ib)%Charge/abs(Ebunch(ib)%Charge)
+                    enddo
+                    zwkmin = (grange(5)-poscent)*Scxlt + (zz - zz1)
+                    denszp = 0.0d0
+                    denszpp = 0.0d0
+                    call csrwakeTrIGF_FieldQuant(Nz,r0bend,zwkmin,hzwake,&
+                                   bendlen,densz,denszp,denszpp,gamin,ezwake)
+                  endif
+                  call kickref_Bd_BeamBunch(Ebunch(ib)%refptcl,t,Ebunch(ib)%Charge,&
+                         Ebunch(ib)%Mass,dtless,Blnelem,idrfile,idbd,fldmp,bcs2,bss2)
+                  totchrgb = Ebunch(ib)%Current/Bfreq
+                  call kickpt2ptBd_BeamBunch(Nplocal(ib),Ebunch(ib)%Pts1,t,&
+                         Ebunch(ib)%Charge,Ebunch(ib)%Mass,dtless,Blnelem,idrfile,&
+                         idbd,fldmp,bcs2,bss2,totchrgb,r0,Np(ib),Np(ib),flagcsr,&
+                         ezwake,Nz,grange(5),hzw0)
+                else if(Bcurr.gt.1.0e-10) then
 
                   call update_CompDom(Ageom,ptrange,grid2d,Flagbctmp)
                   call getlcmnum_CompDom(Ageom,lcgrid)

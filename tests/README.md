@@ -253,3 +253,11 @@ Item 2 of D1.10 added the bend-frame kernels to the same test:
   `diagnostic1avgB_Output`, transcribed in the test: the 29 sums within 7.3e-14
   of the sum of the absolute terms (a sequential 1e6-term host sum, not the
   device, is the less accurate one), maxima equal.
+
+D1.12 (N-body in the bend frame) added `bendpt2pt_gpu` against `kickpt2ptBd_BeamBunch`
+to `test_bend_gpu` (2e4 particles including z < 0, reference at 0.1 rad, with and without a
+CSR wake): final momenta within 3.1e-16 of |p| (the pair sums are reordered on the device; the
+plan's "1e-13 of the largest kick" is below the momentum's last bit, as in item 2).
+`test_bendnbody_cpu.f90` (CPU only; link like `test_pt2ptfields` against `build-mpi`): two
+particles side by side at gamma 57, no dipole field, one of them at z < 0; the transverse kick
+equals e/(4 pi eps0 r^2 gamma) (c Dt)/(m c^2/e) to 1.7e-11 (tolerance 1e-10; the code's constants).

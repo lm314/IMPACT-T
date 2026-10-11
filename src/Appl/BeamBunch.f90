@@ -2844,6 +2844,139 @@
 
         end subroutine kick2tBd0_BeamBunch
 
+
+        !> D1.12: N-body (point-to-point) space charge in the bend frame.
+        !> The particles are already rotated to the frame of the reference
+        !> particle (rottoT).  Sources are every particle (emitted flag 1:
+        !> bend-frame z starts at the entrance, so z > 0 is no test here), no
+        !> image.  The fields are those of pt2ptFields; the dipole of the bend
+        !> alone is added and the update is kick2tBd's, except that the
+        !> space-charge bz is kept.  With csrflag = 1 the CSR wake ezwake(1:nzw)
+        !> (bins of width hzw0, first bin at zminw, in the rotated z) is added
+        !> to ez with the histogram's linear weights.  cs, ss: the reference
+        !> angle before its kick (kickref_Bd).
+        subroutine kickpt2ptBd_BeamBunch(nptlc,rays,tg,chge,mass,dt,beamelem,&
+        idrfile,idbd,fldmap,cs,ss,totchrg,r0,npttot,nptrue,csrflag,ezwake,nzw,&
+        zminw,hzw0)
+        implicit none
+        include 'mpif.h'
+        integer, intent(in) :: nptlc,idbd,npttot,nptrue,csrflag,nzw
+        double precision, intent (inout), dimension(9,nptlc) :: rays
+        double precision, intent (in) :: dt,mass,chge,tg,totchrg,r0,cs,ss,zminw,hzw0
+        type (BeamLineElem), dimension(:), intent(in) :: beamelem
+        type (fielddata), dimension(:), intent(in) :: fldmap
+        integer, dimension(:,:), intent(in) :: idrfile
+        double precision, dimension(nzw), intent(in) :: ezwake
+        double precision, allocatable, dimension(:,:) :: sources,srcloc
+        double precision, dimension(4,nptlc) :: targets
+        double precision, dimension(nptlc) :: fx,fy,fz,gx,gy,gz
+        integer, allocatable, dimension(:) :: recvcounts,displs
+        integer :: n,i,iizz,ierr,myid,nproc,myoffset,sgn
+        double precision :: t0,t1,coefE,gam,eeff,ezc
+        double precision, dimension(4) :: pos
+        double precision, dimension(6) :: extfld
+        double precision :: recpgamma,coefLz,&
+                            umx,umy,umz,upx,upy,upz,tmp,a1,a2,a3,a4,s1,s2,&
+                            s3,ex,ey,ez,bx,by,bz
+        logical :: image
+
+        call starttime_Timer( t0 )
+        if(chge.gt.0.0) then
+          sgn = 1
+        else
+          sgn = -1
+        endif
+        coefE = 1.0d0/(4*Pi*Epsilon0*Scxlt*Scxlt)*sgn*totchrg/nptrue
+
+        call MPI_COMM_RANK(MPI_COMM_WORLD,myid,ierr)
+        call MPI_COMM_SIZE(MPI_COMM_WORLD,nproc,ierr)
+        allocate(recvcounts(nproc),displs(nproc))
+        call MPI_ALLGATHER(nptlc,1,MPI_INTEGER,recvcounts,1,MPI_INTEGER,&
+             MPI_COMM_WORLD,ierr)
+        displs(1) = 0
+        do i = 2, nproc
+          displs(i) = displs(i-1) + recvcounts(i-1)
+        enddo
+        myoffset = displs(myid+1)
+
+        allocate(srcloc(10,nptlc))
+        do n = 1, nptlc
+          gam = sqrt(1.0d0+rays(2,n)**2+rays(4,n)**2+rays(6,n)**2)
+          srcloc(1,n) = rays(1,n)
+          srcloc(2,n) = rays(3,n)
+          srcloc(3,n) = rays(5,n)
+          srcloc(4,n) = rays(2,n)/gam
+          srcloc(5,n) = rays(4,n)/gam
+          srcloc(6,n) = rays(6,n)/gam
+          srcloc(7,n) = gam
+          srcloc(8,n) = 1.0d0
+          srcloc(9,n) = gam*gam/(gam+1.0d0)
+          srcloc(10,n) = gam/(gam+1.0d0)
+          targets(1,n) = rays(1,n)
+          targets(2,n) = rays(3,n)
+          targets(3,n) = rays(5,n)
+          targets(4,n) = 1.0d0
+        enddo
+        allocate(sources(10,npttot))
+        call MPI_ALLGATHERV(srcloc,10*nptlc,MPI_DOUBLE_PRECISION,&
+             sources,10*recvcounts,10*displs,MPI_DOUBLE_PRECISION,&
+             MPI_COMM_WORLD,ierr)
+        deallocate(srcloc)
+
+        image = .false.
+        call starttime_Timer(t1)
+        call pt2ptFields(nptlc,targets,myoffset,npttot,sources,image,r0,&
+                          fx,fy,fz,gx,gy,gz)
+        t_pt2ptfields = t_pt2ptfields + elapsedtime_Timer(t1)
+        deallocate(sources,recvcounts,displs)
+
+        do n = 1, nptlc
+          pos(1) = (cs*rays(1,n)+ss*rays(5,n))*Scxlt
+          pos(2) = rays(3,n)*Scxlt
+          pos(3) = (-ss*rays(1,n) + cs*rays(5,n))*Scxlt
+          pos(4) = tg
+          coefLz = rays(7,n)*Scxlt
+          extfld = 0.0
+          call getfldt_BeamLineElem(beamelem(idbd),pos,&
+          extfld,fldmap(idrfile(3,idbd)))
+
+          ezc = coefE*fz(n)
+          if(csrflag.eq.1) then
+            iizz = (rays(5,n)-zminw)/hzw0 + 1
+            eeff = ((zminw-rays(5,n))+iizz*hzw0)/hzw0
+            ezc = ezc + (ezwake(iizz)*eeff + ezwake(iizz+1)*(1.0d0-eeff))
+          endif
+          ex = coefE*fx(n)+extfld(1)*cs - extfld(3)*ss
+          ey = coefE*fy(n)+extfld(2)
+          ez = ezc+extfld(1)*ss + extfld(3)*cs
+          bx = coefE*gx(n)/Clight+extfld(4)*cs - extfld(6)*ss
+          by = coefE*gy(n)/Clight+extfld(5)
+          bz = coefE*gz(n)/Clight+(extfld(4)*ss + extfld(6)*cs)
+
+          umx = rays(2,n) + coefLz*ex*0.5d0*dt
+          umy = rays(4,n) + coefLz*ey*0.5d0*dt
+          umz = rays(6,n) + coefLz*ez*0.5d0*dt
+          recpgamma = 1.0d0/sqrt(1.0d0+umx*umx+umy*umy+umz*umz)
+          tmp = 0.5d0*Clight*dt*recpgamma*coefLz
+          a1 = tmp*bx
+          a2 = tmp*by
+          a3 = tmp*bz
+          a4 = 1.0d0+a1*a1+a2*a2+a3*a3
+          s1 = umx + tmp*(umy*bz-umz*by)
+          s2 = umy - tmp*(umx*bz-umz*bx)
+          s3 = umz + tmp*(umx*by-umy*bx)
+          upx = ((1.0d0+a1*a1)*s1+(a1*a2+a3)*s2+(a1*a3-a2)*s3)/a4
+          upy = ((a1*a2-a3)*s1+(1.0d0+a2*a2)*s2+(a2*a3+a1)*s3)/a4
+          upz = ((a1*a3+a2)*s1+(a2*a3-a1)*s2+(1.0d0+a3*a3)*s3)/a4
+          rays(2,n) = upx + coefLz*ex*0.5d0*dt
+          rays(4,n) = upy + coefLz*ey*0.5d0*dt
+          rays(6,n) = upz + coefLz*ez*0.5d0*dt
+        enddo
+
+        t_ntrslo = t_ntrslo + elapsedtime_Timer( t0 )
+
+        end subroutine kickpt2ptBd_BeamBunch
+
         !//release all the memory held by BeamBunch.
         subroutine destruct_BeamBunch(this)
         implicit none
