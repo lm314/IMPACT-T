@@ -2493,6 +2493,75 @@
  
         end subroutine drifthalfBd_BeamBunch
 
+        !> The reference-particle half of kick2tBd/kick2tBd0 (D1.6): the dipole
+        !> field at the reference particle and its Boris update.  Returns the
+        !> cos and sin of the reference angle BEFORE the kick, which the
+        !> particle rotations of the same step use.  Shared by both CPU
+        !> routines and the GPU bend loop.
+        subroutine kickref_Bd_BeamBunch(refpt,tg,chge,mass,dt,beamelem,idrfile,&
+                                        idbd,fldmap,cs,ss)
+        implicit none
+        include 'mpif.h'
+        double precision, dimension(6), intent(inout) :: refpt
+        double precision, intent(in) :: tg,chge,mass,dt
+        type (BeamLineElem), dimension(:), intent(in) :: beamelem
+        integer, dimension(:,:), intent(in) :: idrfile
+        integer, intent(in) :: idbd
+        type (fielddata), dimension(:), intent(in) :: fldmap
+        double precision, intent(out) :: cs,ss
+        double precision, dimension(4) :: pos
+        double precision, dimension(6) :: extfld
+        double precision :: qmcc,recpgamma,coefLz,&
+                            umx,umy,umz,upx,upy,upz,tmp,a1,a2,a3,a4,s1,s2,&
+                            s3,ex,ey,ez,bx,by,bz
+
+        qmcc = chge/mass
+        coefLz = qmcc*Scxlt
+        !cos and sin of the rotation angle. In a straight machine,
+        !the rotation angle is 0.
+        cs = refpt(6)/sqrt(refpt(2)**2+refpt(6)**2)
+        ss = refpt(2)/sqrt(refpt(2)**2+refpt(6)**2)
+
+        pos(1) = refpt(1)*Scxlt
+        pos(2) = refpt(3)*Scxlt
+        pos(3) = refpt(5)*Scxlt
+        pos(4) = tg
+        !get external field from all overlaped fields at one location
+        extfld = 0.0
+        call getfldt_BeamLineElem(beamelem(idbd),pos,&
+        extfld,fldmap(idrfile(3,idbd)))
+
+        ex = extfld(1)
+        ey = extfld(2)
+        ez = extfld(3)
+        bx = extfld(4)
+        by = extfld(5)
+        bz = extfld(6)
+
+        !//advance the momenta of particles using implicit central
+        !//difference scheme from Birdall and Longdon's book.
+        umx = refpt(2) + coefLz*ex*0.5d0*dt
+        umy = refpt(4) + coefLz*ey*0.5d0*dt
+        umz = refpt(6) + coefLz*ez*0.5d0*dt
+        recpgamma = 1.0d0/sqrt(1.0d0+umx*umx+umy*umy+umz*umz)
+        tmp = 0.5d0*Clight*dt*recpgamma*coefLz
+        a1 = tmp*bx
+        a2 = tmp*by
+        a3 = tmp*bz
+        a4 = 1.0d0+a1*a1+a2*a2+a3*a3
+        s1 = umx + tmp*(umy*bz-umz*by)
+        s2 = umy - tmp*(umx*bz-umz*bx)
+        s3 = umz + tmp*(umx*by-umy*bx)
+        upx = ((1.0d0+a1*a1)*s1+(a1*a2+a3)*s2+(a1*a3-a2)*s3)/a4
+        upy = ((a1*a2-a3)*s1+(1.0d0+a2*a2)*s2+(a2*a3+a1)*s3)/a4
+        upz = ((a1*a3+a2)*s1+(a2*a3-a1)*s2+(1.0d0+a3*a3)*s3)/a4
+        refpt(2) = upx + coefLz*ex*0.5d0*dt
+        refpt(4) = upy + coefLz*ey*0.5d0*dt
+        refpt(6) = upz + coefLz*ez*0.5d0*dt
+ 
+
+        end subroutine kickref_Bd_BeamBunch
+
         !interpolate the space-charge fields E and B in the lab frame
         !to individual particle + external fields.
         subroutine kick2tBd_BeamBunch(innp,innx,inny,innz,rays,exg,&
@@ -2535,13 +2604,9 @@
 
         call starttime_Timer( t0 )
 
-        qmcc = chge/mass
-        coefLz = qmcc*Scxlt
-        !cos and sin of the rotation angle. In a straight machine,
-        !the rotation angle is 0.
-        cs = refpt(6)/sqrt(refpt(2)**2+refpt(6)**2)
-        ss = refpt(2)/sqrt(refpt(2)**2+refpt(6)**2)
-
+        !the reference particle: cs and ss are the rotation angle before its kick
+        call kickref_Bd_BeamBunch(refpt,tg,chge,mass,dt,beamelem,idrfile,idbd,&
+                                  fldmap,cs,ss)
     
         call getmsize_CompDom(ptsgeom,msize)
         hxi = 1.0d0/msize(1)
@@ -2582,43 +2647,6 @@
         ntmp1 = 0
         ntmp2 = 0
 
-        pos(1) = refpt(1)*Scxlt
-        pos(2) = refpt(3)*Scxlt
-        pos(3) = refpt(5)*Scxlt
-        pos(4) = tg
-        !get external field from all overlaped fields at one location
-        extfld = 0.0
-        call getfldt_BeamLineElem(beamelem(idbd),pos,&
-        extfld,fldmap(idrfile(3,idbd)))
-
-        ex = extfld(1)
-        ey = extfld(2)
-        ez = extfld(3)
-        bx = extfld(4)
-        by = extfld(5)
-        bz = extfld(6)
-
-        !//advance the momenta of particles using implicit central
-        !//difference scheme from Birdall and Longdon's book.
-        umx = refpt(2) + coefLz*ex*0.5d0*dt
-        umy = refpt(4) + coefLz*ey*0.5d0*dt
-        umz = refpt(6) + coefLz*ez*0.5d0*dt
-        recpgamma = 1.0d0/sqrt(1.0d0+umx*umx+umy*umy+umz*umz)
-        tmp = 0.5d0*Clight*dt*recpgamma*coefLz
-        a1 = tmp*bx
-        a2 = tmp*by
-        a3 = tmp*bz
-        a4 = 1.0d0+a1*a1+a2*a2+a3*a3
-        s1 = umx + tmp*(umy*bz-umz*by)
-        s2 = umy - tmp*(umx*bz-umz*bx)
-        s3 = umz + tmp*(umx*by-umy*bx)
-        upx = ((1.0d0+a1*a1)*s1+(a1*a2+a3)*s2+(a1*a3-a2)*s3)/a4
-        upy = ((a1*a2-a3)*s1+(1.0d0+a2*a2)*s2+(a2*a3+a1)*s3)/a4
-        upz = ((a1*a3+a2)*s1+(a2*a3-a1)*s2+(1.0d0+a3*a3)*s3)/a4
-        refpt(2) = upx + coefLz*ex*0.5d0*dt
-        refpt(4) = upy + coefLz*ey*0.5d0*dt
-        refpt(6) = upz + coefLz*ez*0.5d0*dt
- 
         do n = 1, innp
           ix=(rays(1,n)-xmin)*hxi + 1
           ab=((xmin-rays(1,n))+ix*hx)*hxi
@@ -2765,50 +2793,10 @@
 
         call starttime_Timer( t0 )
 
-        qmcc = chge/mass
-        coefLz = qmcc*Scxlt
-        !cos and sin of the rotation angle. In a straight machine,
-        !the rotation angle is 0.
-        cs = refpt(6)/sqrt(refpt(2)**2+refpt(6)**2)
-        ss = refpt(2)/sqrt(refpt(2)**2+refpt(6)**2)
+        !the reference particle: cs and ss are the rotation angle before its kick
+        call kickref_Bd_BeamBunch(refpt,tg,chge,mass,dt,beamelem,idrfile,idbd,&
+                                  fldmap,cs,ss)
 
-        pos(1) = refpt(1)*Scxlt
-        pos(2) = refpt(3)*Scxlt
-        pos(3) = refpt(5)*Scxlt
-        pos(4) = tg
-        !get external field from all overlaped fields at one location
-        extfld = 0.0
-        call getfldt_BeamLineElem(beamelem(idbd),pos,&
-        extfld,fldmap(idrfile(3,idbd)))
-
-        ex = extfld(1)
-        ey = extfld(2)
-        ez = extfld(3)
-        bx = extfld(4)
-        by = extfld(5)
-        bz = extfld(6)
-
-        !//advance the momenta of particles using implicit central
-        !//difference scheme from Birdall and Longdon's book.
-        umx = refpt(2) + coefLz*ex*0.5d0*dt
-        umy = refpt(4) + coefLz*ey*0.5d0*dt
-        umz = refpt(6) + coefLz*ez*0.5d0*dt
-        recpgamma = 1.0d0/sqrt(1.0d0+umx*umx+umy*umy+umz*umz)
-        tmp = 0.5d0*Clight*dt*recpgamma*coefLz
-        a1 = tmp*bx
-        a2 = tmp*by
-        a3 = tmp*bz
-        a4 = 1.0d0+a1*a1+a2*a2+a3*a3
-        s1 = umx + tmp*(umy*bz-umz*by)
-        s2 = umy - tmp*(umx*bz-umz*bx)
-        s3 = umz + tmp*(umx*by-umy*bx)
-        upx = ((1.0d0+a1*a1)*s1+(a1*a2+a3)*s2+(a1*a3-a2)*s3)/a4
-        upy = ((a1*a2-a3)*s1+(1.0d0+a2*a2)*s2+(a2*a3+a1)*s3)/a4
-        upz = ((a1*a3+a2)*s1+(a2*a3-a1)*s2+(1.0d0+a3*a3)*s3)/a4
-        refpt(2) = upx + coefLz*ex*0.5d0*dt
-        refpt(4) = upy + coefLz*ey*0.5d0*dt
-        refpt(6) = upz + coefLz*ez*0.5d0*dt
- 
         do n = 1, innp
           !get field in Cartesian coordinate from analytical function.
           !we need to rotate the coordinate back to the orginal coordinate.

@@ -232,3 +232,24 @@ one-element active table, so the table builder is tested too.
 - `fld_emcart` (kind 4) against `getfldt_EMfldCart`: the 88 MB deflector map,
   5 RF phases, both ends of the strict z test, and 100 points outside the map
   (zero field, `cartout_d` counter = 100). Bit-identical.
+
+Item 2 of D1.10 added the bend-frame kernels to the same test:
+
+- `kickref_Bd_BeamBunch` (the reference-particle half of `kick2tBd`/`kick2tBd0`,
+  now shared by both CPU routines and the GPU loop) and `k_kick_bend0` against
+  `kick2tBd0_BeamBunch` for 1e5 particles in the bend frame with a reference at
+  0.1 rad: `refptcl` bit-identical (same host code); final momenta within
+  3e-16 of |p|. The momenta are about 45 and the kicks about 1e-5, so the
+  last bit that FMA contraction moves is 1e-10 to 1e-13 of a kick; the check
+  therefore scales by the momentum, not by the largest kick.
+- `rottoT_gpu` (rotated values, `ptrange`, `poscent`), `rotbackT_gpu`,
+  `convEntr_gpu`, `convExit_gpu`, `driftbackhalf_gpu`, `drifthalfBd_gpu`
+  against the BeamBunch routines, 1e6 particles (1e5 for the conversions),
+  and an empty rank (`ptrange` = ±1e20). Rotations, drifts and `convExit` are
+  within 2.1e-16 (the device fuses multiply-adds; `rotbackT`, `convEntr`
+  and the `drifthalfBd` drifts happen to be bit-identical).
+  `poscent` (a 1e6-term sum): 1.3e-14.
+- `diagB_pass1_gpu`, `diagB_pass2_gpu` against the host loops of
+  `diagnostic1avgB_Output`, transcribed in the test: the 29 sums within 7.3e-14
+  of the sum of the absolute terms (a sequential 1e6-term host sum, not the
+  device, is the less accurate one), maxima equal.

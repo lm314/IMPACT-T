@@ -8,6 +8,10 @@
 !   fld_quad     vs getfld_Quadrupole     (modes 1, 2, 3; skew; RF; 5 times)
 !   fld_dipole   vs getfldt_Dipole        (CXLS faces and tilted faces)
 !   fld_emcart   vs getfldt_EMfldCart     (5 RF phases, both ends, out of map)
+!   k_kick_bend0 vs kick2tBd0_BeamBunch   (and kickref_Bd: refptcl bit-identical)
+!   rottoT_gpu, rotbackT_gpu, convEntr_gpu, convExit_gpu, driftbackhalf_gpu,
+!   drifthalfBd_gpu vs the BeamBunch routines
+!   diagB_pass1_gpu, diagB_pass2_gpu vs the host loops of diagnostic1avgB_Output
 module tbend_kernels
   use cudafor
   use FieldmapGPUclass
@@ -42,6 +46,8 @@ program test_bend_gpu
   use PhysConstclass
   use Timerclass
   use FieldmapGPUclass
+  use ParticleGPUclass
+  use BeamBunchclass
   use tbend_kernels
   implicit none
   include 'mpif.h'
@@ -60,9 +66,12 @@ program test_bend_gpu
     call initt_Data(fld(it))
   enddo
 
+  call gpu_particles_init(1)
   call test_quads()
   call test_dipoles()
   call test_cart()
+  call test_bend_kernels()
+  call test_diagB()
 
   if(nfail.eq.0) then
     print*,"test_bend_gpu: ALL PASS"
@@ -312,6 +321,332 @@ contains
     call run_out(zedge,len,x,y,z,100)
     deallocate(x,y,z)
   end subroutine test_cart
+
+  subroutine report(name,a,b,n,tol)
+    character(len=*), intent(in) :: name
+    integer, intent(in) :: n
+    double precision, intent(in) :: a(n),b(n),tol
+    double precision :: scl,dmax
+    integer :: nid,k
+    scl = max(maxval(abs(a)),maxval(abs(b)),1.0d-300)
+    dmax = maxval(abs(a-b))
+    nid = 0
+    do k = 1, n
+      if(a(k).eq.b(k)) nid = nid + 1
+    enddo
+    write(*,'(a34,2x,a,es10.3,a,f8.4,a)') name,"max diff/scale ",dmax/scl, &
+      "  bit-identical ",100.0d0*nid/n,"%"
+    if(dmax/scl.gt.tol) then
+      print*,"   FAIL (tol ",tol,")"
+      nfail = nfail + 1
+    endif
+  end subroutine report
+
+  !> compare the momentum kicks (p after - p before), scaled by the largest kick
+  subroutine report_kick(name,pa,pb,p0,n,tol)
+    character(len=*), intent(in) :: name
+    integer, intent(in) :: n
+    double precision, intent(in) :: pa(n),pb(n),p0(n),tol
+    double precision :: da(n),db(n)
+    da = pa - p0
+    db = pb - p0
+    call report(name,da,db,n,tol)
+  end subroutine report_kick
+
+  subroutine copy_bunch(a,b)
+    type (BeamBunch), intent(in) :: a
+    type (BeamBunch), intent(inout) :: b
+    b%Current = a%Current
+    b%Mass = a%Mass
+    b%Charge = a%Charge
+    b%Npt = a%Npt
+    b%Nptlocal = a%Nptlocal
+    b%refptcl = a%refptcl
+    allocate(b%Pts1(9,size(a%Pts1,2)))
+    b%Pts1 = a%Pts1
+  end subroutine copy_bunch
+
+  subroutine make_bend_bunch(b,n,seed,zlo,zhi,xr)
+    type (BeamBunch), intent(inout) :: b
+    integer, intent(in) :: n
+    integer, intent(inout) :: seed
+    double precision, intent(in) :: zlo,zhi,xr
+    integer :: k
+    call construct_BeamBunch(b,1.0d-5,1.0d6,0.511005d6,-1.0d0,n,0.0d0)
+    allocate(b%Pts1(9,n))
+    b%Nptlocal = n
+    b%Npt = n
+    do k = 1, n
+      b%Pts1(1,k) = xr*(2*nrand(seed)-1)/Scxlt
+      b%Pts1(3,k) = 0.3d0*xr*(2*nrand(seed)-1)/Scxlt
+      b%Pts1(5,k) = (zlo+(zhi-zlo)*nrand(seed))/Scxlt
+      b%Pts1(2,k) = 0.1d0*(nrand(seed)-0.5d0)
+      b%Pts1(4,k) = 0.1d0*(nrand(seed)-0.5d0)
+      b%Pts1(6,k) = 45.0d0+0.5d0*(nrand(seed)-0.5d0)
+      b%Pts1(7,k) = -1.0d0/0.511005d6
+      b%Pts1(8,k) = 1.0d0
+      b%Pts1(9,k) = k
+    enddo
+    b%refptcl = (/0.001d0/Scxlt,4.5d0,0.0d0,0.0d0,0.1d0/Scxlt,45.0d0/)
+  end subroutine make_bend_bunch
+
+  subroutine test_bend_kernels()
+    type (BeamBunch) :: bc, bg
+    type (BeamLineElem) :: be1(1)
+    double precision :: zbe1(2,1), rc(6), rg(6), pcc, pcg, cs, ss, cs2, ss2
+    double precision :: refc(6), refg(6), tau, tg, dt, p0(9,100000)
+    double precision, allocatable :: sv(:)
+    integer :: idr1(3,1), n, seed, k
+    double precision :: ptref(6), b0, p5
+    integer :: slot
+    double precision :: dmom
+
+    slot = 2
+    b0 = 0.3d0
+    p5 = 0.0125d0
+    be1(1) = assign_BeamLineElem(dp(1))
+    zbe1(1,1) = 5.6547d0
+    zbe1(2,1) = 5.6547d0+0.302d0
+    idr1(:,1) = (/4,15,slot/)
+    tg = 1.0d-10
+    dt = 1.0d0
+
+    ! ---- kick, mode none, against kick2tBd0_BeamBunch (refptcl at 0.1 rad)
+    n = 100000
+    seed = 777
+    call make_bend_bunch(bc,n,seed,-0.02d0,0.32d0,0.012d0)
+    call copy_bunch(bc,bg)
+    bg%refptcl = bc%refptcl
+    p0(:,1:n) = bc%Pts1(:,1:n)
+    refc = bc%refptcl
+    call kick2tBd0_BeamBunch(n,bc%Pts1,tg,bc%Charge,bc%Mass,dt,be1,zbe1,idr1,1,1,fld,refc)
+    refg = bg%refptcl
+    call kickref_Bd_BeamBunch(refg,tg,bg%Charge,bg%Mass,dt,be1,idr1,1,fld,cs,ss)
+    call mark_host_newer(1)
+    call kick_bend_gpu(1,bg,.false.,cs,ss,dt,slot,b0,p5,1,1,1,rc,rg)
+    call ensure_host(1,bg)
+    call report("kickref refptcl (bit-identical)",refc,refg,6,0.0d0)
+    ! the momenta are ~45, the kicks ~1e-5: FMA contraction moves the last bit of
+    ! the momentum, which is ~1e-10 of a kick.  The pass criterion is the
+    ! momentum difference scaled by the momentum; the kick-relative number is
+    ! printed for information.
+    call report_kick("k_kick_bend0 px",bc%Pts1(2,:),bg%Pts1(2,:),p0(2,:),n,1.0d30)
+    call report_kick("k_kick_bend0 py",bc%Pts1(4,:),bg%Pts1(4,:),p0(4,:),n,1.0d30)
+    call report_kick("k_kick_bend0 pz",bc%Pts1(6,:),bg%Pts1(6,:),p0(6,:),n,1.0d30)
+    dmom = max(maxval(abs(bc%Pts1(2,:)-bg%Pts1(2,:))),maxval(abs(bc%Pts1(4,:)-bg%Pts1(4,:))), &
+               maxval(abs(bc%Pts1(6,:)-bg%Pts1(6,:))))/maxval(abs(bc%Pts1(6,:)))
+    write(*,'(a34,2x,a,es10.3)') "k_kick_bend0 final momenta","max diff/max|p| ",dmom
+    if(dmom.gt.4.0d-16) then
+      print*,"   FAIL (tol 4e-16)"
+      nfail = nfail + 1
+    endif
+    call check_gpu_error()
+    ! the kicks must be nonzero (the dipole field acts)
+    if(maxval(abs(bc%Pts1(2,:)-p0(2,:))).eq.0.0d0 .and. &
+       maxval(abs(bc%Pts1(6,:)-p0(6,:))).eq.0.0d0) then
+      print*,"   FAIL: the CPU kick is zero, the test does not exercise the dipole"
+      nfail = nfail + 1
+    endif
+    deallocate(bc%Pts1,bg%Pts1)
+
+    ! ---- rotations, range and centroid
+    n = 1000000
+    seed = 4321
+    call make_bend_bunch(bc,n,seed,-0.02d0,0.32d0,0.012d0)
+    call copy_bunch(bc,bg)
+    ptref = bc%refptcl
+    cs = ptref(6)/sqrt(ptref(6)**2 + ptref(2)**2)
+    ss = ptref(2)/sqrt(ptref(6)**2 + ptref(2)**2)
+    call rottoT_BeamBunch(bc,ptref,rc,pcc)
+    call mark_host_newer(1)
+    call rottoT_gpu(1,bg,cs,ss,rg,pcg)
+    call ensure_host(1,bg)
+    call report("rottoT x",bc%Pts1(1,:),bg%Pts1(1,:),n,4.0d-16)
+    call report("rottoT px",bc%Pts1(2,:),bg%Pts1(2,:),n,4.0d-16)
+    call report("rottoT z",bc%Pts1(5,:),bg%Pts1(5,:),n,4.0d-16)
+    call report("rottoT pz",bc%Pts1(6,:),bg%Pts1(6,:),n,4.0d-16)
+    call report("rottoT y, py unchanged",bg%Pts1(3:4,:),bc%Pts1(3:4,:),2*n,0.0d0)
+    call report("rottoT ptrange",rc,rg,6,4.0d-16)
+    call report("rottoT poscent",(/pcc/),(/pcg/),1,5.0d-14)
+    deallocate(bc%Pts1,bg%Pts1)
+    call make_bend_bunch(bc,n,seed,-0.02d0,0.32d0,0.012d0)
+    call copy_bunch(bc,bg)
+    call mark_host_newer(1)
+    call rotbackT_BeamBunch(bc,ptref)
+    call rotbackT_gpu(1,bg,cs,ss)
+    call ensure_host(1,bg)
+    call report("rotbackT x",bc%Pts1(1,:),bg%Pts1(1,:),n,4.0d-16)
+    call report("rotbackT px",bc%Pts1(2,:),bg%Pts1(2,:),n,4.0d-16)
+    call report("rotbackT z",bc%Pts1(5,:),bg%Pts1(5,:),n,4.0d-16)
+    call report("rotbackT pz",bc%Pts1(6,:),bg%Pts1(6,:),n,4.0d-16)
+    deallocate(bc%Pts1,bg%Pts1)
+
+    ! ---- an empty rank
+    call construct_BeamBunch(bc,1.0d-5,1.0d6,0.511005d6,-1.0d0,1000,0.0d0)
+    allocate(bc%Pts1(9,1))
+    bc%Nptlocal = 0
+    bc%Npt = 1000
+    call copy_bunch(bc,bg)
+    bg%Nptlocal = 0
+    bg%Npt = 1000
+    call rottoT_BeamBunch(bc,ptref,rc,pcc)
+    call mark_host_newer(1)
+    call rottoT_gpu(1,bg,cs,ss,rg,pcg)
+    call report("rottoT empty rank ptrange",rc,rg,6,0.0d0)
+    call report("rottoT empty rank poscent",(/pcc/),(/pcg/),1,0.0d0)
+    deallocate(bc%Pts1,bg%Pts1)
+
+    ! ---- convEntr, convExit, driftbackhalf, drifthalfBd
+    n = 100000
+    seed = 55
+    call make_bend_bunch(bc,n,seed,-0.02d0,0.32d0,0.012d0)
+    call copy_bunch(bc,bg)
+    bg%refptcl = bc%refptcl
+    call convEntr_BeamBunch(bc,5.6547d0,45.25d0)
+    call mark_host_newer(1)
+    call convEntr_gpu(1,bg,5.6547d0,45.25d0)
+    call ensure_host(1,bg)
+    call report("convEntr z",bc%Pts1(5,:),bg%Pts1(5,:),n,0.0d0)
+    call report("convEntr refptcl",bc%refptcl,bg%refptcl,6,0.0d0)
+
+    tau = 1.0d0
+    call driftbackhalf_BeamBunch(bc,tg,tau)
+    call driftbackhalf_gpu(1,bg,tau)
+    call ensure_host(1,bg)
+    call report("driftbackhalf x",bc%Pts1(1,:),bg%Pts1(1,:),n,4.0d-16)
+    call report("driftbackhalf z",bc%Pts1(5,:),bg%Pts1(5,:),n,4.0d-16)
+    call report("driftbackhalf refptcl",bc%refptcl,bg%refptcl,6,0.0d0)
+    call drifthalfBd_BeamBunch(bc,tg,tau)
+    call drifthalfBd_gpu(1,bg,tau)
+    call ensure_host(1,bg)
+    call report("drifthalfBd x",bc%Pts1(1,:),bg%Pts1(1,:),n,4.0d-16)
+    call report("drifthalfBd y",bc%Pts1(3,:),bg%Pts1(3,:),n,4.0d-16)
+    call report("drifthalfBd z",bc%Pts1(5,:),bg%Pts1(5,:),n,4.0d-16)
+    call report("drifthalfBd refptcl",bc%refptcl,bg%refptcl,6,0.0d0)
+
+    ! reference at the exit angle
+    bc%refptcl(2) = 4.4d0
+    bc%refptcl(6) = 44.9d0
+    bg%refptcl = bc%refptcl
+    call convExit_BeamBunch(bc,5.9567d0)
+    call convExit_gpu(1,bg,5.9567d0)
+    call ensure_host(1,bg)
+    call report("convExit x",bc%Pts1(1,:),bg%Pts1(1,:),n,4.0d-16)
+    call report("convExit px",bc%Pts1(2,:),bg%Pts1(2,:),n,4.0d-16)
+    call report("convExit y",bc%Pts1(3,:),bg%Pts1(3,:),n,4.0d-16)
+    call report("convExit z",bc%Pts1(5,:),bg%Pts1(5,:),n,4.0d-16)
+    call report("convExit pz",bc%Pts1(6,:),bg%Pts1(6,:),n,4.0d-16)
+    call report("convExit refptcl",bc%refptcl,bg%refptcl,6,0.0d0)
+    deallocate(bc%Pts1,bg%Pts1)
+  end subroutine test_bend_kernels
+
+  !> the per-particle terms of diagnostic1avgB_Output's second pass
+  subroutine termsB(q,z0avg,pz0avg,gamavg,t,mx,rr)
+    double precision, intent(in) :: q(9),z0avg,pz0avg,gamavg
+    double precision, intent(out) :: t(29),mx(6),rr
+    double precision :: tmpgam
+    tmpgam = sqrt(1.0+q(2)**2+q(4)**2+q(6)**2)
+    t = 0.0d0
+    t(1) = q(1)
+    t(2) = q(2)
+    t(3) = q(3)
+    t(4) = q(4)
+    t(6) = q(6)
+    t(7) = q(1)*q(1)
+    t(8) = q(2)*q(2)
+    t(9) = q(3)*q(3)
+    t(10) = q(4)*q(4)
+    t(11) = (q(5)-z0avg)**2
+    t(12) = (q(6)-pz0avg)**2
+    t(13) = q(1)*q(2)
+    t(14) = q(3)*q(4)
+    t(15) = (q(5)-z0avg)*(q(6)-pz0avg)
+    t(16) = q(1)*q(1)*q(1)
+    t(17) = q(1)*q(1)*q(1)*q(1)
+    t(18) = q(2)*q(2)*q(2)
+    t(19) = q(2)*q(2)*q(2)*q(2)
+    t(20) = q(3)*q(3)*q(3)
+    t(21) = q(3)*q(3)*q(3)*q(3)
+    t(22) = q(4)*q(4)*q(4)
+    t(23) = q(4)*q(4)*q(4)*q(4)
+    t(24) = (q(5)-z0avg)**3
+    t(25) = (q(5)-z0avg)**4
+    t(26) = (q(6)-pz0avg)**3
+    t(27) = (q(6)-pz0avg)**4
+    t(28) = tmpgam
+    t(29) = (tmpgam-gamavg)**2
+    mx(1) = abs(q(1))
+    mx(2) = abs(q(2))
+    mx(3) = abs(q(3))
+    mx(4) = abs(q(4))
+    mx(5) = abs(q(5)-z0avg)
+    mx(6) = abs(q(6)-pz0avg)
+    rr = q(1)**2+q(3)**2
+  end subroutine termsB
+
+  subroutine test_diagB()
+    type (BeamBunch) :: bg(1)
+    integer :: n, seed, i, k
+    double precision :: s3(3), g3(3), z0avg, pz0avg, gamavg
+    double precision :: sref(29), sabs(29), t(29), mx(6), rr, mref(6), rrref
+    double precision :: tg29(29), lmax(6), lcr, err, worst
+    n = 1000000
+    seed = 2024
+    call make_bend_bunch(bg(1),n,seed,-0.02d0,0.32d0,0.012d0)
+    ! a rotated, spread-out beam: give z and pz some structure
+    do i = 1, n
+      bg(1)%Pts1(2,i) = bg(1)%Pts1(2,i) + 0.01d0*bg(1)%Pts1(1,i)*Scxlt/0.012d0
+      bg(1)%Pts1(6,i) = bg(1)%Pts1(6,i) + 0.2d0*sin(40.0d0*bg(1)%Pts1(5,i)*Scxlt)
+    enddo
+    ! pass 1 on the host
+    s3 = 0.0d0
+    do i = 1, n
+      s3(1) = s3(1) + bg(1)%Pts1(5,i)
+      s3(2) = s3(2) + bg(1)%Pts1(6,i)
+      s3(3) = s3(3) + sqrt(1.0+bg(1)%Pts1(2,i)**2+bg(1)%Pts1(4,i)**2+bg(1)%Pts1(6,i)**2)
+    enddo
+    call mark_host_newer(1)
+    call diagB_pass1_gpu(bg,1,g3)
+    worst = 0.0d0
+    do k = 1, 3
+      err = abs(s3(k)-g3(k))/abs(s3(k))
+      worst = max(worst,err)
+    enddo
+    write(*,'(a34,2x,a,es10.3)') "diagB pass 1 (z, pz, gamma sums)","max rel diff ",worst
+    if(worst.gt.2.0d-13) then
+      print*,"   FAIL (tol 2e-13)"
+      nfail = nfail + 1
+    endif
+    z0avg = s3(1)/n
+    pz0avg = s3(2)/n
+    gamavg = s3(3)/n
+    ! pass 2 on the host
+    sref = 0.0d0
+    sabs = 0.0d0
+    mref = 0.0d0
+    rrref = 0.0d0
+    do i = 1, n
+      call termsB(bg(1)%Pts1(:,i),z0avg,pz0avg,gamavg,t,mx,rr)
+      sref = sref + t
+      sabs = sabs + abs(t)
+      mref = max(mref,mx)
+      rrref = max(rrref,rr)
+    enddo
+    call diagB_pass2_gpu(bg,1,z0avg,pz0avg,gamavg,tg29,lmax,lcr)
+    worst = 0.0d0
+    do k = 1, 29
+      if(sabs(k).gt.0.0d0) worst = max(worst,abs(sref(k)-tg29(k))/sabs(k))
+    enddo
+    write(*,'(a34,2x,a,es10.3,a)') "diagB pass 2 (29 sums)","max |diff|/sum|terms| ",worst, &
+      "  (tmplc(5) = 0 on the GPU: "//merge("yes","NO ",tg29(5).eq.0.0d0)//")"
+    if(worst.gt.2.0d-13 .or. tg29(5).ne.0.0d0) then
+      print*,"   FAIL (tol 2e-13)"
+      nfail = nfail + 1
+    endif
+    call report("diagB maxima (equal)",mref,lmax,6,0.0d0)
+    call report("diagB max r^2 (equal)",(/rrref/),(/lcr/),1,0.0d0)
+    deallocate(bg(1)%Pts1)
+  end subroutine test_diagB
 
   subroutine run_out(zedge,len,x,y,z,n)
     double precision, intent(in) :: zedge,len,x(n),y(n),z(n)

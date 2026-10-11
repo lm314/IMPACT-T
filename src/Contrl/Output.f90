@@ -18,7 +18,7 @@
         use PhysConstclass
 #ifdef USE_GPU
         use ParticleGPUclass, only: diag_gpu_ready,diag_zsum_gpu,&
-                  diag_pass1_gpu,diag_pass2_gpu
+                  diag_pass1_gpu,diag_pass2_gpu,diagB_pass1_gpu,diagB_pass2_gpu
 #endif
 
       contains
@@ -1055,12 +1055,15 @@
         !> calculate averaged <x^2>,<xp>,<px^2>,x emittance, <y^2>,<ypy>,
         !> <py^2> and y emittance, <z^2>,<zp>,<pz^2>,z emittance from
         !> multiple bunch/bin.
-        subroutine diagnostic1avgB_Output(z,this,Nbunch)
+        subroutine diagnostic1avgB_Output(z,this,Nbunch,forcehost)
         implicit none
         include 'mpif.h'
         double precision, intent(in) :: z
         type (BeamBunch), dimension(:), intent(inout) :: this
         integer, intent(in) :: Nbunch
+        !> true: the host loop is running and the host particles are the
+        !> current ones (the device copy is stale)
+        logical, intent(in), optional :: forcehost
         integer :: innp,nptot
         double precision:: den1,den2,sqsum1,sqsum2,sqsum3,sqsum4,&
                           epsx2,epsy2
@@ -1086,8 +1089,16 @@
         integer :: npctmin,npctmax,ib,innpmb,i1,i2
         real*8 :: gamavg,gamgl
         real*8, dimension(3) :: tmp3lc,tmp3gl
+        logical :: usegpu
 
         call starttime_Timer(t0)
+        usegpu = .false.
+#ifdef USE_GPU
+        usegpu = diag_gpu_ready()
+        if(present(forcehost)) then
+          if(forcehost) usegpu = .false.
+        endif
+#endif
 
         qmc = this(1)%Mass/1.0e6
         xl = Scxlt
@@ -1105,13 +1116,18 @@
           innp = this(ib)%Nptlocal
           innpmb = innpmb + innp
           nptot = nptot + this(ib)%Npt
+          if(.not.usegpu) then
           do i = 1, innp
             tmp3lc(1) = tmp3lc(1) + this(ib)%Pts1(5,i)
             tmp3lc(2) = tmp3lc(2) + this(ib)%Pts1(6,i)
             tmp3lc(3) = tmp3lc(3) + sqrt(1.0+this(ib)%Pts1(2,i)**2+&
                this(ib)%Pts1(4,i)**2+this(ib)%Pts1(6,i)**2)
           enddo
+          endif
         enddo
+#ifdef USE_GPU
+        if(usegpu) call diagB_pass1_gpu(this,Nbunch,tmp3lc)
+#endif
 
         call MPI_ALLREDUCE(tmp3lc,tmp3gl,3,MPI_DOUBLE_PRECISION,&
                         MPI_SUM,MPI_COMM_WORLD,ierr)
@@ -1167,6 +1183,11 @@
 !        testmax = 0.0
         gamlc = 0.0
         gam2lc = 0.0
+#ifdef USE_GPU
+        if(usegpu) call diagB_pass2_gpu(this,Nbunch,z0avg,pz0avg,gamavg,tmplc,&
+                                         localmax,lcrmax)
+#endif
+        if(.not.usegpu) then
         do ib = 1, Nbunch
           innp = this(ib)%Nptlocal
           do i = 1, innp
@@ -1228,9 +1249,11 @@
             endif
           enddo
         enddo
+        endif
 
         !print*,"z0avg: ",z0avg*xl,localmax(5)*xl,&
         !       this(1)%Pts1(5,i1)*xl
+        if(.not.usegpu) then
         tmplc(1) = x0lc
         tmplc(2) = px0lc
         tmplc(3) = y0lc
@@ -1260,6 +1283,7 @@
         tmplc(27) = pz0lc4
         tmplc(28) = gamlc
         tmplc(29) = gam2lc
+        endif
         
         call MPI_REDUCE(tmplc,tmpgl,29,MPI_DOUBLE_PRECISION,&
                         MPI_SUM,0,MPI_COMM_WORLD,ierr)

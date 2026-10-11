@@ -2763,7 +2763,7 @@
               vref = sqrt((Ebunch(ibb)%refptcl(2)/gam)**2+(Ebunch(ibb)%refptcl(6)/gam)**2)
               zz = zz + vref*dtless*Scxlt
 
-              call diagnostic1avgB_Output(t,Ebunch,Nbunch)
+              call diagnostic1avgB_Output(t,Ebunch,Nbunch,.true.)
               print*,"zz: ",zz,zorgin2
 
               if(zz.gt.(zorgin2-zorgin)) then
