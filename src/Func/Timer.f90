@@ -38,6 +38,7 @@
         double precision :: t_kickgpu
         double precision :: t_syncgpu
         double precision :: t_bendgpu
+        double precision :: t_csr
         double precision :: t_fft2dhpf
         double precision :: t_mfft_local1
         double precision :: t_field
@@ -80,6 +81,7 @@
         t_kickgpu = values
         t_syncgpu = values
         t_bendgpu = values
+        t_csr = values
         t_fft2dhpf = values
         t_mfft_local1 = values
         t_field = values
@@ -136,6 +138,7 @@
         call showtime_aux( "kickgpu",     t_kickgpu )
         call showtime_aux( "syncgpu",     t_syncgpu )
         call showtime_aux( "bendgpu",     t_bendgpu )
+        call showtime_aux( "csr",         t_csr )
         call showtime_aux( "fft2dhpf",    t_fft2dhpf )
         call showtime_aux( "mfft_local1", t_mfft_local1 )
         call showtime_aux( "diag",        t_diag )

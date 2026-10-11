@@ -34,7 +34,7 @@
         public :: kick_mesh_core, set_device_mesh, rho_dev, phi_dev, phiimg_dev
         public :: ex_dev, ey_dev, ez_dev, bx_dev, by_dev
         public :: diag_gpu_ready, diag_zsum_gpu, diag_pass1_gpu, diag_pass2_gpu
-        public :: count_bend
+        public :: count_bend, csr_hist_gpu, csr_addez_gpu
         public :: rottoT_gpu, rotbackT_gpu, convEntr_gpu, convExit_gpu
         public :: driftbackhalf_gpu, drifthalfBd_gpu, kick_bend_gpu
         public :: diagB_pass1_gpu, diagB_pass2_gpu
@@ -227,6 +227,8 @@
             print*,"kick - index out of range: particle ",info(2)," dim ",info(4)," index ",info(3)
           else if(code.eq.3) then
             print*,"ir: particle ",info(2)," ir ",info(3)
+          else if(code.eq.6) then
+            print*,"csr - histogram index out of range: particle ",info(2)," index ",info(3)
           else
             print*,"ParticleGPU: error code ",code
           endif
@@ -2071,5 +2073,85 @@
         amx(6) = m6
         rmx = rm
         end subroutine dB2z_core
+
+
+        !-------------------------------------------------------------
+        ! D1.11: CSR line density and wake field on the device
+        !-------------------------------------------------------------
+        !> the line-density histogram of the CSR block of the host bend loop,
+        !> on the rotated z (row 5): iizz and eeff as written there
+        attributes(global) subroutine k_csr_hist(p,n,dens,nz,zmin,hzwake)
+        implicit none
+        integer, value :: n,nz
+        real(8), value :: zmin,hzwake
+        real(8), device :: p(9,n)
+        real(8), device :: dens(nz+1)
+        integer :: i,iizz,old
+        real(8) :: eeff,dum
+        i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+        if(i.gt.n) return
+        iizz = (p(5,i)-zmin)/hzwake + 1
+        eeff = ((zmin-p(5,i))+iizz*hzwake)/hzwake
+        if(iizz.lt.1 .or. iizz.gt.nz) then
+          old = atomicCAS(gpuerr_d,0,6)
+          if(old.eq.0) then
+            gpuerr_info_d(2) = i
+            gpuerr_info_d(3) = iizz
+          endif
+          return
+        endif
+        dum = atomicAdd(dens(iizz),eeff)
+        dum = atomicAdd(dens(iizz+1),1.0d0-eeff)
+        end subroutine k_csr_hist
+
+        !> denslc(1:nz) = this rank's histogram (the CPU's denszlc, before the
+        !> sums over ranks); zmin = grange(5) of the beam domain
+        subroutine csr_hist_gpu(ib,bunch,nz,zmin,hzwake,denslc)
+        implicit none
+        integer, intent(in) :: ib,nz
+        type (BeamBunch), intent(inout) :: bunch
+        double precision, intent(in) :: zmin,hzwake
+        double precision, intent(out) :: denslc(nz)
+        real(8), device, allocatable :: dens_d(:)
+        double precision, allocatable :: h(:)
+        double precision :: t0
+        call ensure_device(ib,bunch)
+        call starttime_Timer(t0)
+        allocate(dens_d(nz+1),h(nz+1))
+        dens_d = 0.0d0
+        if(pb(ib)%n.gt.0) then
+          call k_csr_hist<<<(pb(ib)%n+127)/128,128>>>(pb(ib)%p,pb(ib)%n,dens_d, &
+               nz,zmin,hzwake)
+        endif
+        call sync_gpu()
+        h = dens_d
+        denslc = h(1:nz)
+        deallocate(dens_d,h)
+        t_depgpu = t_depgpu + elapsedtime_Timer(t0)
+        end subroutine csr_hist_gpu
+
+        !> ez_dev(i,j,k) += ezw(k) on the global grid (kst = k)
+        subroutine csr_addez_gpu(nx,ny,nz,ezw)
+        implicit none
+        integer, intent(in) :: nx,ny,nz
+        double precision, intent(in) :: ezw(nz)
+        real(8), device, allocatable :: ezw_d(:)
+        integer :: i,j,k
+        double precision :: t0
+        call starttime_Timer(t0)
+        allocate(ezw_d(nz))
+        ezw_d = ezw
+        !$cuf kernel do(3) <<<*,*>>>
+        do k = 1, nz
+          do j = 1, ny
+            do i = 1, nx
+              ez_dev(i,j,k) = ez_dev(i,j,k) + ezw_d(k)
+            enddo
+          enddo
+        enddo
+        call sync_gpu()
+        deallocate(ezw_d)
+        t_depgpu = t_depgpu + elapsedtime_Timer(t0)
+        end subroutine csr_addez_gpu
 
       end module ParticleGPUclass

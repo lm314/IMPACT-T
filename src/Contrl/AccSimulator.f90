@@ -759,7 +759,7 @@
         integer, dimension(3) :: gmesh
 !for the GPU bend loop (D1): gpubend selects it for one bend
         logical :: gpubend = .false., gpubendwarned = .false.
-        double precision :: bcs,bss,bcs2,bss2,bb0,bp5,tbend0
+        double precision :: bcs,bss,bcs2,bss2,bb0,bp5,tbend0,tcsr0
         integer :: bslot
 !--------------
 ! dielectric wakefield module implemented by Daniel Mihalcea:
@@ -2539,9 +2539,6 @@
               else if(Flagbc.ne.1) then
                 gpubend = .false.
                 gpuwhy = "Flagbc /= 1"
-              else if(flagcsr.eq.1) then
-                gpubend = .false.
-                gpuwhy = "CSR in the bend (not on the GPU yet)"
               endif
               if(.not.gpubend) then
                 if(.not.gpubendwarned .and. myid.eq.0) then
@@ -2682,6 +2679,40 @@
                 !so pass gbetz = 1; no image (flagImage = 0, zshift = 0)
                 call mesh_fields_gpu(ib,Ebunch(ib),gmesh(1),gmesh(2),gmesh(3),&
                        range,msize,gammazavg,1.0d0,flagpos,0,0.0d0,totnp)
+                if(flagcsr.eq.1) then
+                  !D1.11: histogram and field addition on the device, the wake
+                  !on the host exactly as in the host loop
+                  call starttime_Timer(tcsr0)
+                  call getrange_CompDom(Ageom,grange)
+                  hzwake = (grange(6)-grange(5))*1.0000001/(Nz-1) !avoid over index
+                  call csr_hist_gpu(ib,Ebunch(ib),Nz,grange(5),hzwake,denszlc)
+                  call check_gpu_error()
+                  densz = 0.0
+                  call MPI_ALLREDUCE(denszlc,densz,Nz,MPI_DOUBLE_PRECISION,&
+                                 MPI_SUM,commcol,ierr)
+                  do kz = 1, Nz
+                    sendensz(kz,1) = densz(kz)
+                  enddo
+                  call MPI_ALLREDUCE(sendensz,recvdensz,Nz,MPI_DOUBLE_PRECISION,&
+                                 MPI_SUM,commrow,ierr)
+                  do kz = 1, Nz
+                    densz(kz) = recvdensz(kz,1)
+                  enddo
+                  !get the line charge density along z
+                  hzwake = hzwake*Scxlt
+                  do kz = 1, Nz
+                    densz(kz) = recvdensz(kz,1)*Ebunch(ib)%Current/Scfreq/Np(ib)/hzwake*&
+                                  Ebunch(ib)%Charge/abs(Ebunch(ib)%Charge)
+                  enddo
+                  zwkmin = (grange(5)-poscent)*Scxlt + (zz - zz1)
+                  ezwake = 0.0
+                  denszp = 0.0d0
+                  denszpp = 0.0d0
+                  call csrwakeTrIGF_FieldQuant(Nz,r0bend,zwkmin,hzwake,&
+                                 bendlen,densz,denszp,denszpp,gamin,ezwake)
+                  call csr_addez_gpu(gmesh(1),gmesh(2),gmesh(3),ezwake)
+                  t_csr = t_csr + elapsedtime_Timer(tcsr0)
+                endif
                 call kickref_Bd_BeamBunch(Ebunch(ib)%refptcl,t,Ebunch(ib)%Charge,&
                        Ebunch(ib)%Mass,dtless,Blnelem,idrfile,idbd,fldmp,bcs2,bss2)
                 call kick_bend_gpu(ib,Ebunch(ib),.true.,bcs2,bss2,dtless,bslot,&
