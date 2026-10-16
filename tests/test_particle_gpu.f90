@@ -1,7 +1,8 @@
 ! B2 test: each GPU particle kernel against the CPU routine it ports, on the
 ! same input (1 rank, 1 GPU).  Not part of the CMake build; see tests/README.md.
 !
-! Run in a directory holding rfdata1001, rfdata1002, rfdata1003 and 1T1.T7
+! Run in a directory holding rfdata1001, rfdata1002, rfdata1003 and 1T1.T7 (written by
+! `python3 tests/make_test_inputs.py particle DIR`)
 ! (Sample4_2Dfield, element type 112).
 !
 !   extfld_dev / kick_none   vs scatter20t_BeamBunch   (types 105 and 112, 5 times)

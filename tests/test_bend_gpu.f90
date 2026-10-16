@@ -4,7 +4,7 @@
 !
 ! Run in a directory holding rfdata111 (quadrupole profile), rfdata15 (dipole
 ! Enge file) and 1T7.T7 (a type-111 map, z header 0..0.108), as written by
-! tests/make_bend_inputs.py:
+! `tests/make_test_inputs.py bend DIR`:
 !
 !   fld_quad     vs getfld_Quadrupole     (modes 1, 2, 3; skew; RF; 5 times)
 !   fld_dipole   vs getfldt_Dipole        (straight and tilted faces)
