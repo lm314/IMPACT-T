@@ -5,7 +5,7 @@
 ! as kickpt2ptImg_BeamBunch does in production -- so the total pair work
 ! (2*NTOT^2) is fixed regardless of nproc, just divided across ranks/GPUs.
 ! Run with one rank per GPU (srun --gpus-per-task=1) to measure scaling;
-! see IMPACTT_GPU_PORT_PLAN.md's A3 check and tests/README.md.
+! see doc/GPU_PORT_DESIGN.md's A3 check and tests/README.md.
 ! Not part of the CMake build; see tests/README.md for how to build and run.
 program bench_pt2ptfields_mgpu
         use BeamBunchclass, only: pt2ptFields

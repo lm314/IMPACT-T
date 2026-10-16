@@ -3,7 +3,7 @@
 
 Runs the same IMPACT-T input with two executables (a reference and a
 candidate build -- e.g. gfortran vs nvfortran, or CPU vs GPU) and compares
-the results. See IMPACTT_GPU_PORT_PLAN.md, section "0.3 Test harness".
+the results. See doc/GPU_PORT_DESIGN.md, section "0.3 Test harness".
 
 Two kinds of check:
 

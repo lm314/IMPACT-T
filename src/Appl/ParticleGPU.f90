@@ -1,6 +1,6 @@
 !----------------------------------------------------------------
 ! ParticleGPUclass: per-particle work of an ordinary time step on the GPU
-! (CUDA Fortran).  See IMPACTT_GPU_PORT_PLAN.md, B2.3-B2.5.
+! (CUDA Fortran).  See doc/GPU_PORT_DESIGN.md, B2.3-B2.5.
 !
 ! The particles live on the device for the whole run; Ebunch(ib)%Pts1 on
 ! the host is a mirror that is refreshed only when host code needs it

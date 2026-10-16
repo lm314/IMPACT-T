@@ -2,7 +2,7 @@
 ! FieldmapGPUclass: external-field lookup on the GPU for beam line
 ! elements of type 105 (SolRF with a discrete on-axis file, Param(5)>1000),
 ! 112 (EMfldCyl), and (D1.2) type 1 (Quadrupole), 111 (EMfldCart) and
-! type 4 (Dipole, in ordinary steps).  See IMPACTT_GPU_PORT_PLAN.md, B2.6
+! type 4 (Dipole, in ordinary steps).  See doc/GPU_PORT_DESIGN.md, B2.6
 ! and D1.2.
 !
 ! The CPU dispatch (getfldt_BeamLineElem) is replaced by flat tables:

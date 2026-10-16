@@ -71,7 +71,7 @@ if(USE_GPU)
     endif()
     target_compile_definitions(${OUTPUT_NAME} PUBLIC USE_GPU)
     # maxregcount:64 was chosen by an A2 sweep over pt2ptFields's kernel
-    # (IMPACTT_GPU_PORT_PLAN.md Progress, 2026-10-01): it gives the best
+    # (doc/GPU_PORT.md, "Validation", A2): it gives the best
     # measured pair-evaluation rate (+3.2% over the unconstrained default),
     # with a sharp falloff (register spilling) below ~56. Re-sweep if the
     # kernel's live-scalar count changes materially.

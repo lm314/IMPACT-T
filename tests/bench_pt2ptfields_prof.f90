@@ -1,6 +1,6 @@
 ! Profiling variant of bench_pt2ptfields.f90: smaller N and a single
 ! rep, so an `ncu` full-metric-set capture of the pt2ptFields kernel
-! launch stays fast. See IMPACTT_GPU_PORT_PLAN.md's A2 "Profiling" bullet.
+! launch stays fast. See doc/GPU_PORT_DESIGN.md's A2 "Profiling" bullet.
 program bench_pt2ptfields_prof
         use BeamBunchclass, only: pt2ptFields
         use Timerclass, only: starttime_Timer, elapsedtime_Timer

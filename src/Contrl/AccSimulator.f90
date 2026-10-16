@@ -1260,6 +1260,22 @@
           call gpu_particles_init(Nbunch)
           if(myid.eq.0) print*,"particles and fields on the GPU "//&
                                "(IMPACTT_PARTICLES=cpu selects the CPU path)"
+          !input settings that make the GPU path slow or are untested on it
+          if(myid.eq.0) then
+            if(Flagerr.ne.0) print*,"GPU particle path: warning: Flagerr = ",&
+              Flagerr,": every step runs on the CPU (set Flagerr = 0 "//&
+              "unless the lattice has element errors)"
+            if(Nbunch.gt.1) print*,"GPU particle path: warning: Nbunch > 1 "//&
+              "is not tested on the GPU"
+            if(Flagdiag.ne.1 .and. Flagdiag.ne.2 .and. Flagdiag.ne.3) &
+              print*,"GPU particle path: warning: Flagdiag = ",Flagdiag,&
+              " is not tested on the GPU"
+            if(Rstartflg.eq.1) print*,"GPU particle path: warning: "//&
+              "restart (Rstartflg = 1) is not tested on the GPU"
+            if(totnp.gt.1) print*,"GPU particle path: ",totnp," ranks: "//&
+              "particle work is split over the GPUs, the mesh Poisson "//&
+              "solve is repeated on every GPU (no speed-up for it)"
+          endif
         endif
 #endif
         call MPI_BARRIER(comm2d,ierr)

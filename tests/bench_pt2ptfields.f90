@@ -1,6 +1,6 @@
 ! A2 performance check: pair evaluations per second for pt2ptFields
 ! (Appl/BeamBunch.f90) at 1M particles, image charge on (2N^2 pair
-! evaluations per call, per IMPACTT_GPU_PORT_PLAN.md's "What the code does
+! evaluations per call, per doc/GPU_PORT_DESIGN.md's "What the code does
 ! today"). Single rank only -- this measures one GPU's (or, built without
 ! USE_GPU, one CPU core's) raw kernel rate, not multi-GPU scaling (A3).
 ! Builds the 10-column source array (x,y,z,betax,betay,betaz,gamma,flag,

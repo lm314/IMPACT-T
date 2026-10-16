@@ -1,6 +1,6 @@
 ! D1 test: each GPU field kind / bend kernel against the CPU routine it ports,
 ! on the same input (1 rank, 1 GPU).  Not part of the CMake build; see
-! tests/README.md.  IMPACTT_GPU_PORT_PLAN.md, D1.9 item 1.
+! tests/README.md.  doc/GPU_PORT_DESIGN.md, D1.9 item 1.
 !
 ! Run in a directory holding rfdata111 (quadrupole profile), rfdata15 (dipole
 ! Enge file) and 1T7.T7 (the CXLS deflector map, z header 0..0.108):

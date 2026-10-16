@@ -1,7 +1,7 @@
 !----------------------------------------------------------------
 ! PoissonGPUclass: open-boundary Poisson solve on one GPU (CUDA Fortran
 ! + cuFFT), replacing openBC3Dnew in FieldQuantclass when USE_GPU=ON.
-! See IMPACTT_GPU_PORT_PLAN.md, B1.1-B1.9.
+! See doc/GPU_PORT_DESIGN.md, B1.1-B1.9.
 !
 ! Every MPI rank gathers the whole rho and solves it redundantly on its
 ! own GPU, then copies back only its own block.

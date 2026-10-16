@@ -1,263 +1,195 @@
-# A1 test: pt2ptFields
+# Tests for the GPU port
 
-`test_pt2ptfields.f90` checks the point-to-point space-charge field routine
-(`pt2ptFields` in `src/Appl/BeamBunch.f90`) against an independent
-reference implementation of the same pair formulas, at 1 and 4 MPI ranks.
-It is not part of the CMake build (it links against the compiled
-`ImpactTexe-mpi` object files directly), so build `build-mpi` first
-(`-DUSE_MPI=ON -DUSE_FFTW=ON`), then:
+These programs check the GPU port piece by piece against the CPU routines it
+replaces. They are not part of the CMake build. Each one is linked against
+the object files of an existing build with `build_test.sh`. What the port
+does is described in `doc/GPU_PORT.md`, and the design sections the comments
+cite (A1, B2.4, D1.12, ...) are in `doc/GPU_PORT_DESIGN.md`.
 
-```
-cd ../build-mpi
-find CMakeFiles/ImpactTexe-mpi.dir -name "*.o" | \
-  grep -vE "Contrl/(main|AccSimulator|Input|Output)\.f90\.o" > /tmp/objlist.txt
-cat /tmp/objlist.txt | xargs mpif90 -cpp -DUSE_MPI -fallow-argument-mismatch -I. \
-  -o ../tests/test_pt2ptfields ../tests/test_pt2ptfields.f90 \
-  <fftw3 and MPI shared libraries, as printed by
-   CMakeFiles/ImpactTexe-mpi.dir/link.txt>
+| Test | Checks | Build | Ranks |
+|---|---|---|---|
+| `test_pt2ptfields.f90` | point-to-point fields (`pt2ptFields`) against an independent reference, image on and off, analytic self-image | CPU or GPU | 1 and 4 |
+| `test_bendnbody_cpu.f90` | the N-body kick in the bend frame (`kickpt2ptBd_BeamBunch`) against the analytic two-particle field | CPU | 1 |
+| `bench_pt2ptfields.f90` | pair evaluations per second of `pt2ptFields` (1M particles) | CPU or GPU | 1 |
+| `bench_pt2ptfields_prof.f90` | the same at 100k, one call, for an Nsight Compute profile | GPU | 1 |
+| `bench_pt2ptfields_mgpu.f90` | N-body scaling over several GPUs, one rank per GPU | GPU | 1–8 |
+| `test_poisson_gpu.f90` | the GPU Poisson solve `openBC3D_gpu` against `openBC3Dnew` (FFTW) and a direct sum; independence of the rank count | GPU | 1, several |
+| `test_particle_gpu.f90` | each GPU particle kernel (drifts, emission, deposit, gradients, kicks, external fields of types 105 and 112, losses) against the CPU routine it ports | GPU | 1 |
+| `test_bend_gpu.f90` | the field kinds of types 1, 4 and 111, the bend-frame kernels and diagnostics, and the N-body kick in the bend frame, against the CPU routines | GPU | 1 |
+| `compare_runs.py` | runs one input with two executables and compares `fort.18/24/25/26` and the timers | any | any |
+| `compare_dirs.py` | compares `fort.18/24/25/26` of finished run directories | any | any |
 
-cd ../tests
-mpirun -n 1 ./test_pt2ptfields
-mpirun -n 4 ./test_pt2ptfields
-```
-
-(Build the object list to a file and pipe it through `xargs` rather than
-`$(find ...)` inline on the command line -- under zsh, an unquoted
-command substitution is passed as a single word, not one word per line,
-so the linker sees one mangled "filename" instead of ~30 object files.)
-
-For `USE_GPU=ON` (A2 onward), build `build-mpi-gpu` the same way (with
-`-DUSE_GPU=ON`, nvfortran) and link `test_pt2ptfields`/`bench_pt2ptfields`
-against *that* build's object list instead, on a node with a GPU, so the
-`!$acc` directives in `pt2ptFields` actually offload.
-
-Checks (see IMPACTT_GPU_PORT_PLAN.md, step A1):
-
-- **A**: image on, matches a direct+self-image reference to ~1e-12.
-- **B**: image off, matches a direct-only reference to ~1e-13 (this is
-  the state after `zimage`, and the state whenever `Flagimg=0`).
-- **C**: sanity check that the image flag actually changes the result.
-- **D**: a single particle at rest at height z matches the analytic
-  self-image field, e/(4 pi eps0 (2z)^2), to machine precision.
-
-For A2's GPU-vs-CPU field-level check, set `IMPACTT_FIELD_DUMP=<path>`
-to also dump Check A's (image on) computed (ex,ey,ez,bx,by,bz), one row
-per particle in global order (ranks' local fields are gathered to rank
-0 with `MPI_GATHERV`, so the file is the same regardless of nproc).
-Build the same `test_pt2ptfields.f90` once against a `USE_GPU=ON`
-object set and run it on a GPU node, and once against a CPU-only
-(`USE_GPU=OFF`) object set, then diff the two dumps:
+## Building a test
 
 ```
-python3 compare_runs.py --diff-fields gpu_fields.txt cpu_fields.txt --rtol 1e-10
+cmake -S src -B build-mpi -DUSE_MPI=ON -DUSE_FFTW=ON            # CPU (gfortran)
+cmake -S src -B build-gpu -DUSE_MPI=ON -DUSE_FFTW=ON -DUSE_GPU=ON  # GPU (nvfortran)
+cmake --build build-mpi
+tests/build_test.sh build-mpi tests/test_pt2ptfields.f90         # writes tests/test_pt2ptfields
 ```
 
-The same dump/diff mechanism is how A3 checks that 1/2/4/8 GPUs give
-identical results: dump at each GPU count and diff pairwise against the
-1-GPU file.
+`build_test.sh` compiles the test with the build's compiler, flags and module
+files and links it with all of the build's objects except the main program. A
+test linked against a `USE_GPU=ON` build runs its kernels on the GPU (the
+`!$acc` and CUDA Fortran code is inert in a CPU build). Run GPU tests with
+`srun` (`--gpus-per-task=1`), not `mpirun`, so that each rank gets its own GPU.
 
-# A2 performance check: bench_pt2ptfields
+Kicks and fields on the GPU are not bit-identical to the CPU: the device
+compiler contracts multiply-adds into FMAs and the device sums in a different
+order, which moves the last bits. The tolerances below allow for that.
 
-`bench_pt2ptfields.f90` measures pair evaluations/second for
-`pt2ptFields` at 1M particles, single rank, image charge on (2*N^2 pairs
-per call -- the direct term over all pairs but the particle's own, plus
-the image term over all pairs including the particle's own). Link it the
-same way as `test_pt2ptfields` above, against a `USE_GPU=ON` object set
-to measure one H100 or `USE_GPU=OFF` to measure one CPU core:
+## test_pt2ptfields
 
-```
-mpirun -n 1 ./bench_pt2ptfields
-```
-
-Prints the measured rate and, assuming it holds at scale, the projected
-per-step and whole-run (2500-step) time at the plan's 6.24M-particle
-target case.
-
-# A2 GPU profiling: bench_pt2ptfields_prof
-
-`bench_pt2ptfields_prof.f90` is a smaller-N (100k particles), one-rep
-variant of `bench_pt2ptfields.f90`, for capturing an `ncu` (Nsight
-Compute) profile of the `pt2ptFields` kernel without a full-metric-set
-capture taking forever. Link it against a `USE_GPU=ON` object set (same
-way as the other tests), then profile the timed call (the 2nd kernel
-launch; the 1st is an untimed warm-up) with e.g.:
+`pt2ptFields` (`src/Appl/BeamBunch.f90`) against an independent
+implementation of the same pair formulas, 2000 synthetic particles:
 
 ```
-ncu --launch-skip 1 --launch-count 1 \
-    --section SpeedOfLight --section SpeedOfLight_RooflineChart \
-    --section Occupancy --section WarpStateStats \
-    --section ComputeWorkloadAnalysis --section MemoryWorkloadAnalysis \
-    -f -o ncu_report mpirun -n 1 ./bench_pt2ptfields_prof
-ncu -i ncu_report.ncu-rep --page details
+mpirun -n 1 tests/test_pt2ptfields
+mpirun -n 4 tests/test_pt2ptfields
 ```
 
-See IMPACTT_GPU_PORT_PLAN.md's A2 Progress notes for what this found.
+- **A**: image on, against a direct + self-image reference: about 4e-12.
+- **B**: image off (after `zimage`, or `Flagimg = 0`), against a direct-only reference: about 4e-13.
+- **C**: the image term changes the result (sanity).
+- **D**: a single particle at rest at height z against the analytic self-image field e/(4πε₀(2z)²): exact.
 
-# A3 multi-GPU: bench_pt2ptfields_mgpu
-
-`bench_pt2ptfields_mgpu.f90` measures scaling across several GPUs, one
-MPI rank per GPU. Unlike `bench_pt2ptfields.f90` (single rank only), it
-splits NTOT=1M particles into `nptlc=NTOT/nproc` local targets per
-rank; every rank still gathers all NTOT particles as sources
-(`MPI_ALLGATHERV`), exactly as production does, so the total pair work
-(`2*NTOT^2`) is fixed and just divided across ranks/GPUs. Link it the
-same way as the other GPU tests, against a `USE_GPU=ON` object set, and
-launch with `srun` (not `mpirun`) so each rank gets its own GPU:
+Both rank counts give the same numbers. `IMPACTT_FIELD_DUMP=<file>` also
+writes check A's fields (one row per particle, in global order whatever the
+rank count). Dumps from a CPU and a GPU build, or from different GPU counts,
+are compared with
 
 ```
-srun --mpi=pmix --ntasks=P --gpus-per-task=1 ./bench_pt2ptfields_mgpu
+python3 tests/compare_runs.py --diff-fields gpu_fields.txt cpu_fields.txt --rtol 1e-10
 ```
 
-Reports `elapsed_max` (the slowest rank's wall time -- what the
-parallel run is actually bounded by) and the aggregate rate. Run
-`test_pt2ptfields` the same way (with `IMPACTT_FIELD_DUMP` at each P)
-for the consistency check.
+## test_bendnbody_cpu
 
-**Run each P as its own job, sequentially, not concurrently**: Slurm
-can schedule independent jobs for different P onto the same shared
-node at the same time if resources allow, and since every rank does
-its own full ~80MB host-to-GPU copy of the (unchanging-in-size) source
-array every call, concurrent jobs contend for host-GPU bandwidth and
-corrupt the timing -- this produced a clearly wrong "super-linear"
-scaling result once (P=1 contaminated by an overlapping P=2 job) before
-being caught by checking job start/end times. Chain jobs with
-`--dependency=afterany:<jobid>` so each starts only after the previous
-one finishes; this still never holds more GPUs than the current step
-needs.
+Two particles side by side at γ = 57 in the bend frame, no dipole field, one
+of them at z < 0 (every particle is a source in a bend): the transverse kick
+equals e/(4πε₀r²γ)·(cΔt)/(mc²/e) to about 2e-11 (tolerance 1e-10, set by the
+code's constants).
 
-See IMPACTT_GPU_PORT_PLAN.md's A3 Progress notes for the results.
+## bench_pt2ptfields, bench_pt2ptfields_prof
 
-# Phase 0 test harness: compare_runs.py
-
-`compare_runs.py` runs the same IMPACT-T input with two executables and
-compares fort.18/24/25/26 (run-level check) and the `showtime_Timer`
-timers printed to stdout (needs the MPI build, even at 1 rank -- the
-serial build's timers always read 0). Used for:
-
-- the `nvfortran` CPU-only build check against `gfortran` (0.2): looser
-  tolerance (`--rtol`, default 1e-6), since different compilers reorder
-  floating-point sums;
-- CPU-vs-GPU checks from A2 onward: tight tolerance (`--rtol 1e-12`),
-  since the plan expects near-bit-identical results there.
+`bench_pt2ptfields` times `pt2ptFields` at 1M particles with the image on
+(2N² pair evaluations per call) and prints the rate. On one H100 the GPU build
+reaches about 2.0e11 pair evaluations per second. `bench_pt2ptfields_prof` is
+a 100k, one-call variant for Nsight Compute:
 
 ```
-python3 compare_runs.py --ref /path/to/ImpactTexe-mpi \
-    --cand /path/to/ImpactTexe-mpi-gpu \
-    --input-dir /path/to/impact_t_files \
-    --workdir /tmp/cmp --mpi --nproc 1 --rtol 1e-12
+ncu --launch-skip 1 --launch-count 1 --section SpeedOfLight \
+    --section Occupancy --section ComputeWorkloadAnalysis \
+    -f -o ncu_report mpirun -n 1 tests/bench_pt2ptfields_prof
 ```
 
-It also has a `--diff-fields REF CAND` mode (A2) that skips the run-level
-check and just reports the max relative error between two
-(ex,ey,ez,bx,by,bz) dump files, e.g. `test_pt2ptfields`'s
-`IMPACTT_FIELD_DUMP` output -- see the A2 section above.
+The kernel is compute-bound in FP64. `-gpu=maxregcount:64` (set in
+`src/CMakeLists.txt`) gave the best rate in a sweep of the register cap.
 
-# B1 GPU Poisson solve: test_poisson_gpu
+## bench_pt2ptfields_mgpu
 
-`test_poisson_gpu.f90` checks `openBC3D_gpu` (`src/Func/PoissonGPU.f90`)
-against `openBC3Dnew` (FFTW, 1 rank) and checks rank independence. Link it
-against a `USE_GPU=ON` object set (same way as the A2/A3 tests, with
-`-cuda -cudalib=cufft`), and run on a GPU node:
+1M particles split over P ranks, one GPU each; every rank gathers all
+particles as sources (`MPI_ALLGATHERV`), as in a run, so the pair work is
+fixed and divided over the GPUs:
 
 ```
-test_poisson_gpu NX NY NZ [NPY NPZ [DUMPFILE]]
+srun --mpi=pmix --ntasks=P --gpus-per-task=1 tests/bench_pt2ptfields_mgpu
 ```
 
-- 1 rank: compares phi and phi_img for zmin = cathode / near / far (and
-  `flagImage=0` giving exactly 0), and times the GPU solve (image on).
-  `SKIPCPU=1` skips `openBC3Dnew` (use it at 512x512x64: ~hours on a core).
-  For grids up to 40000 points it also sums the image potential directly.
+It reports the slowest rank's time and the aggregate rate. Run each P as its
+own job, one after the other: jobs that share a node at the same time compete
+for host–GPU bandwidth and spoil the timing. The fields are bit-identical for
+every P (check with `test_pt2ptfields` and `IMPACTT_FIELD_DUMP`).
+
+## test_poisson_gpu
+
+`openBC3D_gpu` (`src/Func/PoissonGPU.f90`, cuFFT) against `openBC3Dnew`
+(FFTW):
+
+```
+tests/test_poisson_gpu NX NY NZ [NPY NPZ [DUMPFILE]]
+```
+
+- One rank: φ and the image potential φ_img for a bunch at the cathode, near
+  it and far from it, and `flagImage = 0` (φ_img exactly 0); the GPU solve is
+  timed. `SKIPCPU=1` skips the FFTW solve (hours on one core at 512×512×64).
+  Up to 40000 grid points the image potential is also summed directly.
 - Several ranks (`srun --ntasks=NPY*NPZ --gpus-per-task=1`): GPU only;
-  `DUMPFILE` gets the gathered phi/phi_img as raw binary, so dumps from
-  different (NPY,NPZ) can be compared with `cmp`.
+  `DUMPFILE` gets φ and φ_img as raw binary, and dumps from different
+  (NPY, NPZ) are compared with `cmp` (they are identical).
 
-phi must match to 1e-12. phi_img matches only to the conditioning of the
-integrated Green's function (an 8-corner difference of large values,
-noise ~ eps*(distance/cell)^3, identical on CPU and GPU), so the test
-requires 1e-11 (cathode), 2e-10 (near), and at "far" that the GPU is no
-further from the brute-force sum than the CPU is.
+φ must match to 1e-12. φ_img matches only to the conditioning of the
+integrated Green's function, an 8-corner difference of large values, whose
+noise is about ε·(distance/cell)³ and the same on the CPU and the GPU. The
+test therefore requires 1e-11 (cathode) and 2e-10 (near), and "far" passes
+if the GPU is no further from the direct sum than the CPU is.
 
-At run time, `IMPACTT_POISSON=cpu` makes the GPU executable use the FFTW
-solver, for CPU-vs-GPU full-run comparisons. Full-run inputs are generated
-by `b1_cases/make_cases.py` (in the plan folder).
+## test_particle_gpu
 
-# B2 particles on the GPU: test_particle_gpu
+Each kernel of `src/Appl/ParticleGPU.f90` and `FieldmapGPU.f90` against the
+CPU routine it ports, on the same particles (1 rank, 1 GPU). Run it in a
+directory holding `rfdata1001`–`1003` and `1T1.T7` from
+`examples/Sample4_2Dfield`.
 
-`test_particle_gpu.f90` compares each GPU particle kernel
-(`src/Appl/ParticleGPU.f90`, `FieldmapGPU.f90`) with the CPU routine it
-ports, on the same input (1 rank, 1 GPU). Link it like `test_poisson_gpu`
-against a `USE_GPU=ON` object set, and run it in a directory holding
-`rfdata1001`-`1003` and `1T1.T7` (`examples/Sample4_2Dfield`):
-
-- `kick_none` (which exercises `extfld_dev` for element types 105 and 112,
-  overlapping, 5 times across an RF period) against `scatter20t_BeamBunch`;
-- `kickpt2pt_gpu` against `kickpt2ptImg_BeamBunch`, image on and off;
-- drifts and emission against `drifthalf`/`drifthalforg`/`driftemission` and
-  the first-order emission loop of `AccSimulator`;
+- `kick_none_gpu` (external fields only, through `extfld_dev`, types 105 and
+  112 overlapping, at 5 times across an RF period) against `scatter20t_BeamBunch`.
+- `kickpt2pt_gpu` against `kickpt2ptImg_BeamBunch`, image on and off.
+- The drifts and the emission against `drifthalf`, `drifthalforg`,
+  `driftemission` and the emission loop of `AccSimulator`.
 - `singlerange_gpu` against `singlerange`; `lost_gpu` against
-  `lostREC_BeamBunch` with 0 and 37 lost particles;
-- deposition (`flagpos` 0 and 1) and `gradEB_dev` against reference loops
-  transcribed from `deposit1_Depositor` and the 1-rank, `Flagbc = 1` branches
-  of `gradEB_FieldQuant`.
+  `lostREC_BeamBunch` with 0 and 37 lost particles.
+- The deposit (`flagpos` 0 and 1) and `gradEB_dev` against loops transcribed
+  from `deposit1_Depositor` and the one-rank, `Flagbc = 1` branches of
+  `gradEB_FieldQuant`.
 
-Kicks are compared as the change in momentum, scaled by the largest change.
-The device kernels are not bit-identical to the host routines: the
-compiler contracts multiply-adds into FMAs on the device, which moves the
-last bit (about 1e-16 relative) in a minority of values. The lost test and
-`gradEB_dev` are bit-identical.
+Kicks are compared as the change of momentum, scaled by the largest change:
+within about 1e-16. The loss test and `gradEB_dev` are bit-identical.
 
-`compare_dirs.py REF CAND [REF CAND ...]` compares `fort.18/24/25/26` of
-finished run directories (needs numpy). Full-run inputs are generated by
-`b2_cases/make_cases.py` (in the plan folder); run the default mode (all GPU)
-and `IMPACTT_PARTICLES=cpu` (B1: CPU particles, GPU solve) of the same
-executable and compare.
+## test_bend_gpu
 
-# D1 bends, quadrupoles and 111 maps on the GPU: test_bend_gpu
+The field kinds 3–5 of `FieldmapGPU.f90` (types 1, 111 and 4) and the
+bend-frame kernels of `ParticleGPU.f90`, against the CPU routines (1 rank,
+1 GPU). It needs a quadrupole profile `rfdata111`, a dipole Enge file
+`rfdata15` and a type-111 map `1T7.T7` (z header 0..L) in the run directory.
+The test points come from a fixed linear congruential generator.
 
-`test_bend_gpu.f90` (1 rank, 1 GPU; link it like `test_particle_gpu`)
-compares the D1 field kinds of `FieldmapGPU.f90` and the bend kernels of
-`ParticleGPU.f90` with the CPU routines they port. Run it in a directory
-holding `rfdata111` (quadrupole profile), `rfdata15` (dipole Enge file) and
-`1T7.T7` (the CXLS deflector map, z header 0..0.108 m). The points are drawn
-on a deterministic LCG; every field comparison goes through `extfld_dev` on a
-one-element active table, so the table builder is tested too.
-
-- `fld_quad` (kind 3) against `getfld_Quadrupole`: file profile (mode 1),
-  Enge (mode 2) and hard edge (mode 3), skew (`anglez` 0.1), RF quadrupole at
-  5 times, both edges. Modes 1 and 3 are bit-identical, mode 2 is within 2e-16
-  (device `exp`).
-- `fld_dipole` (kind 5) against `getfldt_Dipole`: the CXLS faces and tilted
-  faces (`Fcoeft(3), (5), (7), (9) /= 0`), points on the four face lines.
-  Within 9e-16 of the largest component.
-- `fld_emcart` (kind 4) against `getfldt_EMfldCart`: the 88 MB deflector map,
-  5 RF phases, both ends of the strict z test, and 100 points outside the map
-  (zero field, `cartout_d` counter = 100). Bit-identical.
-
-Item 2 of D1.10 added the bend-frame kernels to the same test:
-
-- `kickref_Bd_BeamBunch` (the reference-particle half of `kick2tBd`/`kick2tBd0`,
-  now shared by both CPU routines and the GPU loop) and `k_kick_bend0` against
-  `kick2tBd0_BeamBunch` for 1e5 particles in the bend frame with a reference at
-  0.1 rad: `refptcl` bit-identical (same host code); final momenta within
-  3e-16 of |p|. The momenta are about 45 and the kicks about 1e-5, so the
-  last bit that FMA contraction moves is 1e-10 to 1e-13 of a kick; the check
-  therefore scales by the momentum, not by the largest kick.
-- `rottoT_gpu` (rotated values, `ptrange`, `poscent`), `rotbackT_gpu`,
-  `convEntr_gpu`, `convExit_gpu`, `driftbackhalf_gpu`, `drifthalfBd_gpu`
-  against the BeamBunch routines, 1e6 particles (1e5 for the conversions),
-  and an empty rank (`ptrange` = ±1e20). Rotations, drifts and `convExit` are
-  within 2.1e-16 (the device fuses multiply-adds; `rotbackT`, `convEntr`
-  and the `drifthalfBd` drifts happen to be bit-identical).
-  `poscent` (a 1e6-term sum): 1.3e-14.
+- `fld_quad` (kind 3) against `getfld_Quadrupole`: file profile, Enge and hard
+  edge, skew (`anglez` 0.1), an RF quadrupole at 5 times, both edges. File
+  profile and hard edge are bit-identical, Enge within 2e-16 (device `exp`).
+- `fld_dipole` (kind 5) against `getfldt_Dipole`, plain and tilted pole faces,
+  points on the four face lines: within 9e-16 of the largest component.
+- `fld_emcart` (kind 4) against `getfldt_EMfldCart`, 5 RF phases, both ends of
+  the z test, and 100 points outside the map (zero field, and the out-of-map
+  counter reads 100): bit-identical.
+- `kickref_Bd_BeamBunch` (the reference-particle part of `kick2tBd`/`kick2tBd0`,
+  shared by the CPU routines and the GPU loop) and `k_kick_bend0` against
+  `kick2tBd0_BeamBunch`, 1e5 particles, reference at 0.1 rad: the reference
+  particle bit-identical, final momenta within 3e-16 of |p| (the kicks are
+  1e-5 of momenta of about 45, so the comparison is scaled by the momentum).
+- `rottoT_gpu`, `rotbackT_gpu`, `convEntr_gpu`, `convExit_gpu`,
+  `driftbackhalf_gpu`, `drifthalfBd_gpu` against the BeamBunch routines, 1e6
+  particles, and a rank with no particles: within 2.1e-16; `poscent` (a
+  1e6-term sum) within 1.3e-14.
 - `diagB_pass1_gpu`, `diagB_pass2_gpu` against the host loops of
-  `diagnostic1avgB_Output`, transcribed in the test: the 29 sums within 7.3e-14
-  of the sum of the absolute terms (a sequential 1e6-term host sum, not the
-  device, is the less accurate one), maxima equal.
+  `diagnostic1avgB_Output`: the 29 sums within 7.3e-14 of the sum of the
+  absolute terms, maxima equal.
+- `bendpt2pt_gpu` against `kickpt2ptBd_BeamBunch`, 2e4 particles including
+  z < 0, reference at 0.1 rad, with and without a CSR wake: final momenta
+  within 3.1e-16 of |p|.
 
-D1.12 (N-body in the bend frame) added `bendpt2pt_gpu` against `kickpt2ptBd_BeamBunch`
-to `test_bend_gpu` (2e4 particles including z < 0, reference at 0.1 rad, with and without a
-CSR wake): final momenta within 3.1e-16 of |p| (the pair sums are reordered on the device; the
-plan's "1e-13 of the largest kick" is below the momentum's last bit, as in item 2).
-`test_bendnbody_cpu.f90` (CPU only; link like `test_pt2ptfields` against `build-mpi`): two
-particles side by side at gamma 57, no dipole field, one of them at z < 0; the transverse kick
-equals e/(4 pi eps0 r^2 gamma) (c Dt)/(m c^2/e) to 1.7e-11 (tolerance 1e-10; the code's constants).
+## compare_runs.py, compare_dirs.py
+
+`compare_runs.py` runs one input with two executables and compares
+`fort.18/24/25/26` and the timers printed at the end (use MPI builds, even at
+1 rank: the serial build's timers read 0):
+
+```
+python3 tests/compare_runs.py --ref build-mpi/ImpactTexe-mpi \
+    --cand build-gpu/ImpactTexe-mpi-gpu --input-dir examples/... \
+    --workdir /tmp/cmp --mpi --nproc 1 --rtol 1e-6
+```
+
+`compare_dirs.py REF CAND [REF CAND ...]` compares finished run directories
+(needs numpy). The GPU executable runs three ways on the same input, which
+makes CPU–GPU comparisons with one executable possible: the default (all on
+the GPU), `IMPACTT_PARTICLES=cpu` (particles on the CPU, Poisson solve on the
+GPU) and `IMPACTT_POISSON=cpu` (also the FFTW Poisson solve).
