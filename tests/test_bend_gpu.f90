@@ -3,10 +3,11 @@
 ! tests/README.md.  doc/GPU_PORT_DESIGN.md, D1.9 item 1.
 !
 ! Run in a directory holding rfdata111 (quadrupole profile), rfdata15 (dipole
-! Enge file) and 1T7.T7 (the CXLS deflector map, z header 0..0.108):
+! Enge file) and 1T7.T7 (a type-111 map, z header 0..0.108), as written by
+! tests/make_bend_inputs.py:
 !
 !   fld_quad     vs getfld_Quadrupole     (modes 1, 2, 3; skew; RF; 5 times)
-!   fld_dipole   vs getfldt_Dipole        (CXLS faces and tilted faces)
+!   fld_dipole   vs getfldt_Dipole        (straight and tilted faces)
 !   fld_emcart   vs getfldt_EMfldCart     (5 RF phases, both ends, out of map)
 !   k_kick_bend0 vs kick2tBd0_BeamBunch   (and kickref_Bd: refptcl bit-identical)
 !   rottoT_gpu, rotbackT_gpu, convEntr_gpu, convExit_gpu, driftbackhalf_gpu,
@@ -244,7 +245,7 @@ contains
     do i = 1, 40
       z(i) = fld(2)%Fcoeft(3+mod(i-1,4)*2)*x(i)+fld(2)%Fcoeft(4+mod(i-1,4)*2)
     enddo
-    call compare_element("fld_dipole CXLS faces",assign_BeamLineElem(dp(1)),4,15,2, &
+    call compare_element("fld_dipole straight faces",assign_BeamLineElem(dp(1)),4,15,2, &
                          -1.0d9,1.0d9,0.0d0,x,y,z,n,2.0d-15)
 
     ! tilted faces: Fcoeft(3), (5), (7), (9) /= 0

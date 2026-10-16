@@ -18,6 +18,7 @@ cite (A1, B2.4, D1.12, ...) are in `doc/GPU_PORT_DESIGN.md`.
 | `test_bend_gpu.f90` | the field kinds of types 1, 4 and 111, the bend-frame kernels and diagnostics, and the N-body kick in the bend frame, against the CPU routines | GPU | 1 |
 | `compare_runs.py` | runs one input with two executables and compares `fort.18/24/25/26` and the timers | any | any |
 | `compare_dirs.py` | compares `fort.18/24/25/26` of finished run directories | any | any |
+| `make_bend_inputs.py` | writes synthetic input files for `test_bend_gpu` | — | — |
 
 ## Building a test
 
@@ -149,13 +150,16 @@ within about 1e-16. The loss test and `gradEB_dev` are bit-identical.
 The field kinds 3–5 of `FieldmapGPU.f90` (types 1, 111 and 4) and the
 bend-frame kernels of `ParticleGPU.f90`, against the CPU routines (1 rank,
 1 GPU). It needs a quadrupole profile `rfdata111`, a dipole Enge file
-`rfdata15` and a type-111 map `1T7.T7` (z header 0..L) in the run directory.
-The test points come from a fixed linear congruential generator.
+`rfdata15` and a type-111 map `1T7.T7` (z header 0..0.108 m) in the run
+directory. `python3 tests/make_bend_inputs.py RUN_DIR` writes synthetic ones
+(made-up smooth fields with every component nonzero; the test compares GPU
+and CPU on the same data). The test points come from a fixed linear
+congruential generator.
 
 - `fld_quad` (kind 3) against `getfld_Quadrupole`: file profile, Enge and hard
   edge, skew (`anglez` 0.1), an RF quadrupole at 5 times, both edges. File
   profile and hard edge are bit-identical, Enge within 2e-16 (device `exp`).
-- `fld_dipole` (kind 5) against `getfldt_Dipole`, plain and tilted pole faces,
+- `fld_dipole` (kind 5) against `getfldt_Dipole`, straight and tilted pole faces,
   points on the four face lines: within 9e-16 of the largest component.
 - `fld_emcart` (kind 4) against `getfldt_EMfldCart`, 5 RF phases, both ends of
   the z test, and 100 points outside the map (zero field, and the out-of-map
