@@ -769,6 +769,11 @@
 50        continue
             read(14,*,end=77)tmp1
             n = n + 1
+            if(n.gt.size(this%Fcoeft)) then
+              print*,"Error: field file",ifile," has more than",size(this%Fcoeft),&
+                     " numbers (the size of Fcoeft in DataStruct/Data.f90)"
+              call MPI_ABORT(MPI_COMM_WORLD,1,ierr)
+            endif
             this%Fcoeft(n) = tmp1
           goto 50
 77        continue
@@ -858,6 +863,11 @@
           this%Fcoeftdata(2,1) = tmp2
           this%Fcoeftdata(3,1) = tmp3
           ntmp = tmp1 + 0.1
+          if(ntmp+2.gt.size(this%Fcoeftdata,2)) then
+            print*,"Error: field file",ifile," has",ntmp," E-field rows, more than",&
+                   size(this%Fcoeftdata,2)-2," (Fcoeftdata in DataStruct/Data.f90)"
+            call MPI_ABORT(MPI_COMM_WORLD,1,ierr)
+          endif
           do i = 2,ntmp+1
             read(14,*)this%Fcoeftdata(1,i),this%Fcoeftdata(2,i),&
                       this%Fcoeftdata(3,i),this%Fcoeftdata(4,i)
@@ -870,6 +880,11 @@
           this%Fcoeftdata(2,i1) = tmp2
           this%Fcoeftdata(3,i1) = tmp3
           ntmp = tmp1 + 0.1
+          if(i1+ntmp.gt.size(this%Fcoeftdata,2)) then
+            print*,"Error: field file",ifile," has",i1+ntmp," rows in all, more than",&
+                   size(this%Fcoeftdata,2)," (Fcoeftdata in DataStruct/Data.f90)"
+            call MPI_ABORT(MPI_COMM_WORLD,1,ierr)
+          endif
           do i = i1+1,i1+ntmp
             read(14,*)this%Fcoeftdata(1,i),this%Fcoeftdata(2,i),&
                       this%Fcoeftdata(3,i),this%Fcoeftdata(4,i)

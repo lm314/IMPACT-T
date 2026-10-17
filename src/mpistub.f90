@@ -47,6 +47,12 @@
         subroutine MPI_Finalize(ierr)
         end subroutine MPI_Finalize
 
+        !> mpi abort (serial build: stop with a non-zero status)
+        subroutine MPI_ABORT(comm2d,errorcode,ierr)
+          integer :: comm2d,errorcode,ierr
+          error stop 1
+        end subroutine MPI_ABORT
+
         !> global sum
         subroutine  MPI_ALLREDUCE1(tmplc,tmpgl,num,MPI_DOUBLE_PRECISION,&
                                   MPI_SUM,MPI_COMM_WORLD,ierr)
