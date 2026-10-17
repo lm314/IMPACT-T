@@ -18,7 +18,7 @@ The design of each part, with the reasoning behind it, is in `doc/GPU_PORT_DESIG
 
 | Branch | Contents |
 |---|---|
-| `gpu-port-mvp` | `master` plus the GPU port and the fixes, 32 commits (listed in [Appendix A](#appendix-a-commits)) |
+| `gpu-port-mvp` | `master` plus the GPU port, the fixes and these documents (the commits are listed in [Appendix A](#appendix-a-commits)) |
 | `adaptive-step` | `gpu-port-mvp` plus an optional adaptive time step (`Flagmap` = n > 1, tolerance 10⁻ⁿ) and its GPU part, two commits. A separate contribution; nothing in `gpu-port-mvp` depends on it. |
 
 The work was done in stages, named A1–A4 (point-to-point space charge), B1–B2 (mesh solver and particles), C1 (diagnostics) and D1 (quadrupoles, 3D maps, bends, CSR, N-body in bends). The stage names appear in the commit messages and in the code comments.
@@ -277,3 +277,4 @@ Running several smaller CPU runs side by side on a node slows each by 2–3 % (2
 | `3d8a244` | | particle read-in on rank 0 |
 | `43a8b63` | | particle exchange overflow |
 | `990a9c5`, `08d4758`, `e98daab`, `cd1469f`, `a15e480`, `fe8a75f`, `7dbfa58`, `616b5dc` | | ids, reader bounds, MPI buffers, diagnostics NaN, uninitialized values, zero-field bend |
+| `bee821d` and the next | | these documents |
