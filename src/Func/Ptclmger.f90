@@ -29,7 +29,14 @@
 !        double precision, dimension(pdim,npmax) :: Ptsl
         double precision, dimension(:),intent(in) :: lcrange
         integer, parameter :: nptmv = 100000
-        double precision, dimension(9,3*nptmv) :: left,right,up,down
+        !send buffers: the first stage below moves at most nptmv particles per
+        !direction and pass; the forwarding stage (particles received from a
+        !neighbour that belong further on) grows them as needed (keep_ptclmger).
+        !They were fixed-size automatic arrays, and the forwarding stage wrote
+        !past their end when more than 3*nptmv particles had to be forwarded in
+        !one direction (e.g. a whole unemitted bunch crossing several ranks at
+        !the start of emission), overwriting other particles.
+        double precision, allocatable, dimension(:,:) :: left,right,up,down
         double precision, allocatable, dimension(:,:) :: temp1,recv
         integer :: myid,myidx,myidy,totnp,npy,npx, &
                    comm2d,commcol,commrow
@@ -52,6 +59,7 @@
         double precision :: t0
 
         call starttime_Timer(t0)
+        allocate(left(9,3*nptmv),right(9,3*nptmv),up(9,3*nptmv),down(9,3*nptmv))
 
         call getsize_Pgrid2d(grid,totnp,npy,npx)
         call getpost_Pgrid2d(grid,myid,myidy,myidx)
@@ -315,19 +323,19 @@
           if(recv(5,ii).le.lcrange(5)) then
             if(myidx.ne.0) then
               ileft = ileft + 1
-              left(:,ileft) = recv(:,ii)
+              call keep_ptclmger(left,ileft,recv(:,ii))
               mmsk(i) = .false.
             else
               if(recv(3,ii).gt.lcrange(4)) then
                 if(myidy.ne.(npy-1)) then
                 iup = iup + 1
-                up(:,iup) = recv(:,ii)
+                call keep_ptclmger(up,iup,recv(:,ii))
                 mmsk(i) = .false.
                 endif
               else if(recv(3,ii).le.lcrange(3)) then
                 if(myidy.ne.0) then
                 idown = idown + 1
-                down(:,idown) = recv(:,ii)
+                call keep_ptclmger(down,idown,recv(:,ii))
                 mmsk(i) = .false.
                 endif
               else
@@ -336,19 +344,19 @@
           else if(recv(5,ii).gt.lcrange(6)) then
             if(myidx.ne.(npx-1)) then
               iright = iright + 1
-              right(:,iright) = recv(:,ii)
+              call keep_ptclmger(right,iright,recv(:,ii))
               mmsk(i) = .false.
             else
               if(recv(3,ii).gt.lcrange(4)) then
                 if(myidy.ne.(npy-1)) then
                 iup = iup + 1
-                up(:,iup) = recv(:,ii)
+                call keep_ptclmger(up,iup,recv(:,ii))
                 mmsk(i) = .false.
                 endif
               else if(recv(3,ii).le.lcrange(3)) then
                 if(myidy.ne.0) then
                 idown = idown + 1
-                down(:,idown) = recv(:,ii)
+                call keep_ptclmger(down,idown,recv(:,ii))
                 mmsk(i) = .false.
                 endif
               else
@@ -357,13 +365,13 @@
           else if(recv(3,ii).gt.lcrange(4)) then
             if(myidy.ne.(npy-1)) then
               iup = iup + 1
-              up(:,iup) = recv(:,ii)
+              call keep_ptclmger(up,iup,recv(:,ii))
               mmsk(i) = .false.
             endif
           else if(recv(3,ii).le.lcrange(3)) then
             if(myidy.ne.0) then
               idown = idown + 1
-              down(:,idown) = recv(:,ii)
+              call keep_ptclmger(down,idown,recv(:,ii))
               mmsk(i) = .false.
             endif
           else
@@ -445,8 +453,24 @@
 
         enddo
 
+        deallocate(left,right,up,down)
         t_ptsmv = t_ptsmv + elapsedtime_Timer(t0)
 
         end subroutine ptsmv2_ptclmger
+
+        !Store particle p as column n of buf, doubling buf when it is full.
+        subroutine keep_ptclmger(buf,n,p)
+        implicit none
+        double precision, allocatable, dimension(:,:), intent(inout) :: buf
+        integer, intent(in) :: n
+        double precision, dimension(9), intent(in) :: p
+        double precision, allocatable, dimension(:,:) :: tmp
+        if(n.gt.size(buf,2)) then
+          allocate(tmp(9,2*size(buf,2)))
+          tmp(:,1:n-1) = buf(:,1:n-1)
+          call move_alloc(tmp,buf)
+        endif
+        buf(:,n) = p
+        end subroutine keep_ptclmger
 
       end module Ptclmgerclass
