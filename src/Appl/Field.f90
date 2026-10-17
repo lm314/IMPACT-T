@@ -143,6 +143,11 @@
 
         call getsize_Pgrid2d(grid,totnp,nproccol,nprocrow)
         call getpost_Pgrid2d(grid,myid,myidy,myidx)
+        !the guard layers at the edges of the global domain are not computed
+        !below (no neighbour fills them); they are never interpolated from
+        egx = 0.0d0
+        egy = 0.0d0
+        egz = 0.0d0
         if(nproccol.gt.1) then
           yadd = 1
         else
