@@ -9,6 +9,7 @@ cite (A1, B2.4, D1.12, ...) are in `doc/GPU_PORT_DESIGN.md`.
 | Test | Checks | Build | Ranks |
 |---|---|---|---|
 | `test_pt2ptfields.f90` | point-to-point fields (`pt2ptFields`) against an independent reference, image on and off, analytic self-image | CPU or GPU | 1 and 4 |
+| `test_pt2pt_block.f90` | the blocked CPU pair loop of `pt2ptFields` against the unblocked loop, bit for bit, for block sizes 1 to larger than the source count, image on and off | CPU | 1 |
 | `test_bendnbody_cpu.f90` | the N-body kick in the bend frame (`kickpt2ptBd_BeamBunch`) against the analytic two-particle field | CPU | 1 |
 | `bench_pt2ptfields.f90` | pair evaluations per second of `pt2ptFields` (1M particles) | CPU or GPU | 1 |
 | `bench_pt2ptfields_prof.f90` | the same at 100k, one call, for an Nsight Compute profile | GPU | 1 |
@@ -38,6 +39,24 @@ test linked against a `USE_GPU=ON` build runs its kernels on the GPU (the
 Kicks and fields on the GPU are not bit-identical to the CPU: the device
 compiler contracts multiply-adds into FMAs and the device sums in a different
 order, which moves the last bits. The tolerances below allow for that.
+
+## test_pt2pt_block
+
+On the CPU, `pt2ptFields` passes over the sources in blocks of
+`IMPACTT_PT2PT_BLOCK` sources (default 4096), so that a block stays in cache
+while every local target reads it. Each target still adds the sources in order
+into one running sum, so the fields do not depend on the block size. The test
+compares the routine for block sizes 1, 7, 1000, 4096, 3000, 3001 and 100000
+(3001 sources, 1200 targets at a rank offset, unemitted sources, one pair
+inside the cutoff) with a copy of the unblocked loop and expects no differing
+bits:
+
+```
+mpirun -n 1 tests/test_pt2pt_block
+```
+
+A build with `-march` options that enable FMA can contract the two copies
+differently; the test is meant for the default flags.
 
 ## test_pt2ptfields
 

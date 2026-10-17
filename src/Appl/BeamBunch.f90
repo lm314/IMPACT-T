@@ -29,6 +29,9 @@
           double precision, pointer, dimension(:,:) :: Pts1 !< particles type one
           double precision, dimension(6) :: refptcl !< reference particle
         end type BeamBunch
+        !> sources per block of the CPU pair loop in pt2ptFields; 0 until the
+        !> first call sets it from IMPACTT_PT2PT_BLOCK (default 4096)
+        integer :: pt2pt_nblk = 0
       contains
         !--------------------------------------------------------------------------------------
         !> @author Ji Qiang
@@ -1979,6 +1982,8 @@
         double precision :: sumex,sumey,sumez,sumbx,sumby,sumbz
         double precision :: tx,ty,tz,r0sq,r0inv
         logical :: valid
+        integer :: jb,je,ios
+        character(len=32) :: env
 
         !//r0 enters every pair only through 1/r0 and 1/r0^2, so precompute
         !//both once instead of a division (r0sq compare) and a cube (r0**3)
@@ -1986,6 +1991,7 @@
         r0sq = r0*r0
         r0inv = 1.0d0/r0
 
+#ifdef _OPENACC
         !$acc data copyin(targets,sources) copyout(ex,ey,ez,bx,by,bz)
         !$acc parallel loop gang vector &
         !$acc   private(j,gidx,tx,ty,tz,valid,sumex,sumey,sumez,sumbx,sumby, &
@@ -2084,6 +2090,120 @@
         enddo
         !$acc end parallel loop
         !$acc end data
+#else
+        !//CPU: the sources in blocks of pt2pt_nblk that stay in cache while
+        !//every local target passes over them. Unblocked, each target reads
+        !//the whole source array (80 bytes a source) from memory, which at
+        !//1M sources and more leaves a full node memory-bound (6.24M on 128
+        !//Zen 4 cores: 55 % of the in-cache rate). Each target still adds
+        !//the sources in the order 1..npttot into one running sum (kept in
+        !//ex..bz between blocks), so the fields are bit-identical to the
+        !//unblocked loop for any block size. KEEP THE PAIR BODY IDENTICAL to
+        !//the OpenACC loop above and to pt2ptFields_dev.
+        if(pt2pt_nblk.le.0) then
+          pt2pt_nblk = 4096
+          call get_environment_variable('IMPACTT_PT2PT_BLOCK',env)
+          if(len_trim(env).gt.0) then
+            read(env,*,iostat=ios) jb
+            if(ios.eq.0 .and. jb.gt.0) pt2pt_nblk = jb
+          endif
+        endif
+        ex = 0.0d0
+        ey = 0.0d0
+        ez = 0.0d0
+        bx = 0.0d0
+        by = 0.0d0
+        bz = 0.0d0
+        do jb = 1, npttot, pt2pt_nblk
+          je = min(jb+pt2pt_nblk-1,npttot)
+          do n = 1, nptlc
+            if(targets(4,n).gt.0.0d0) then
+              gidx = myoffset + n
+              tx = targets(1,n)
+              ty = targets(2,n)
+              tz = targets(3,n)
+              sumex = ex(n)
+              sumey = ey(n)
+              sumez = ez(n)
+              sumbx = bx(n)
+              sumby = by(n)
+              sumbz = bz(n)
+              do j = jb, je
+                if(sources(8,j).gt.0.0d0) then
+
+                  gammaj = sources(7,j)
+                  c1j = sources(9,j)
+                  c2j = sources(10,j)
+
+                  !//space charge of the beam itself; skip the particle's own
+                  !//direct (non-image) term.
+                  if(j.ne.gidx) then
+                    betajx = sources(4,j)
+                    betajy = sources(5,j)
+                    betajz = sources(6,j)
+                    rijx = tx-sources(1,j)
+                    rijy = ty-sources(2,j)
+                    rijz = tz-sources(3,j)
+                    tmp1 = c1j*(rijx*betajx+rijy*betajy+rijz*betajz)
+                    rijx2 = rijx + tmp1*betajx
+                    rijy2 = rijy + tmp1*betajy
+                    rijz2 = rijz + tmp1*betajz
+                    rij2sq = rijx2**2+rijy2**2+rijz2**2
+                    tmp2 = c2j*(betajx*rijx2+betajy*rijy2+betajz*rijz2)
+                    if(rij2sq.gt.r0sq) then
+                      rinv = 1.0d0/sqrt(rij2sq)
+                    else
+                      rinv = r0inv
+                    endif
+                    rinv3 = rinv*rinv*rinv
+                    sumex = sumex + gammaj*(rijx2-tmp2*betajx)*rinv3
+                    sumey = sumey + gammaj*(rijy2-tmp2*betajy)*rinv3
+                    sumez = sumez + gammaj*(rijz2-tmp2*betajz)*rinv3
+                    sumbx = sumbx + gammaj*(betajy*rijz2-betajz*rijy2)*rinv3
+                    sumby = sumby + gammaj*(betajz*rijx2-betajx*rijz2)*rinv3
+                    sumbz = sumbz + gammaj*(betajx*rijy2-betajy*rijx2)*rinv3
+                  endif
+
+                  !//image space charge of the beam; every particle, including
+                  !//itself (gidx), feels its image while image is on.
+                  if(image) then
+                    betajx =  sources(4,j)
+                    betajy =  sources(5,j)
+                    betajz = -sources(6,j)
+                    rijx = tx-sources(1,j)
+                    rijy = ty-sources(2,j)
+                    rijz = tz+sources(3,j)
+                    tmp1 = c1j*(rijx*betajx+rijy*betajy+rijz*betajz)
+                    rijx2 = rijx + tmp1*betajx
+                    rijy2 = rijy + tmp1*betajy
+                    rijz2 = rijz + tmp1*betajz
+                    rij2sq = rijx2**2+rijy2**2+rijz2**2
+                    tmp2 = c2j*(betajx*rijx2+betajy*rijy2+betajz*rijz2)
+                    if(rij2sq.gt.r0sq) then
+                      rinv = 1.0d0/sqrt(rij2sq)
+                    else
+                      rinv = r0inv
+                    endif
+                    rinv3 = rinv*rinv*rinv
+                    sumex = sumex - gammaj*(rijx2-tmp2*betajx)*rinv3
+                    sumey = sumey - gammaj*(rijy2-tmp2*betajy)*rinv3
+                    sumez = sumez - gammaj*(rijz2-tmp2*betajz)*rinv3
+                    sumbx = sumbx - gammaj*(betajy*rijz2-betajz*rijy2)*rinv3
+                    sumby = sumby - gammaj*(betajz*rijx2-betajx*rijz2)*rinv3
+                    sumbz = sumbz - gammaj*(betajx*rijy2-betajy*rijx2)*rinv3
+                  endif
+                endif
+              enddo
+              ex(n) = sumex
+              ey(n) = sumey
+              ez(n) = sumez
+              bx(n) = sumbx
+              by(n) = sumby
+              bz(n) = sumbz
+            endif
+          enddo
+        enddo
+#endif
 
         end subroutine pt2ptFields
 
