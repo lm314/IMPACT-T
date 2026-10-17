@@ -62,7 +62,7 @@ Point-to-point space charge with image charge needs one-to-one charge: with fewe
 
 ## A3. Several GPUs
 
-One MPI rank per GPU (`srun --gpus-per-task=1`), each computing the fields of its own targets after gathering all sources; no other communication. Fields are bit-identical for 1, 2, 4 and 8 GPUs. 2 GPUs scale at 95 % at 1M particles. (The 4- and 8-GPU measurements we made were on a node with two thermally throttled GPUs and are not a valid scaling result; scaling on healthy GPUs beyond 2 was not measured.) The sources go through the host for the gather on every call; a device-side gather (NCCL or CUDA-aware MPI) is the next step if scaling matters.
+One MPI rank per GPU (`srun --gpus-per-task=1`), each computing the fields of its own targets after gathering all sources; no other communication. Fields are bit-identical for 1, 2, 4 and 8 GPUs. 2 GPUs scale at 95 % at 1M particles. In the full code at 6.24M particles (four steps of the benchmark beam, GPU_PORT.md, Benchmarks) a step takes 235, 120, 60.5 and 30.6 s on 1, 2, 4 and 8 H100s, 96 % efficiency at 8. (Earlier 4- and 8-GPU measurements were made on a node with two thermally throttled GPUs and are superseded.) The sources go through the host for the gather on every call, about 0.5 s a step at 6.24M; a device-side gather (NCCL or CUDA-aware MPI) is the next step if smaller counts or more GPUs matter.
 
 ## A4. Switching between point-to-point and the mesh along the beamline
 
@@ -395,7 +395,7 @@ IMPACT-T's own 1D CSR model (`csrwakeTrIGF_FieldQuant`) is kept on the host: the
 - **The step**, in the rotated frame: every particle is a source and a target (`k_build_src_all`; in the bend frame z is measured from the entrance, so the z > 0 emitted test would drop the bunch tail); image off; `r0` from the last `-15`; the fields from `pt2ptFields_dev` (gather through the host on several ranks); a kick variant that uses `coefE*` the pair fields in place of the interpolated ones, then the dipole field and rotation as in the mesh case, **plus the space-charge `bz`** (the mesh has none; the pair field does). With CSR on, the wake is added at each particle with the histogram's linear weights. `update_CompDom` is still called (cheap; it keeps the range valid for CSR); the deposit, solve and `gradEB` are skipped.
 - **The CPU routine** `kickpt2ptBd_BeamBunch` does the same on the host, so the CPU path remains the reference.
 - **Checks**: two particles side by side at γ = 57 against the analytic transverse field, 1.7e-11; GPU against CPU kick, final momenta ≤ 3.1e-16 of \|p\|; 5k particles through a dipole, GPU against CPU 2.0e-9 of the rms (GPU rerun 4.7e-10), also at 4 ranks; N-body against the mesh in a dipole at 200k particles: x rms equal to 1e-5, x emittance 0.6 % and the longitudinal spreads 1.7–2.5 % larger with N-body (what a 64×64×128 mesh smooths).
-- **Cost**: about 1.1–1.3e11 pair evaluations per second at 200k (the GPU is not full), about 200 s per step at 6.24M on one GPU, so about 55 h for a dipole of about 1000 steps: a reference calculation.
+- **Cost**: about 1.1–1.3e11 pair evaluations per second at 200k (the GPU is not full), 235 s per step at 6.24M on one GPU (measured outside a bend), so about 65 h for a dipole of about 1000 steps: a reference calculation.
 
 ## D1.13 Pitfalls
 

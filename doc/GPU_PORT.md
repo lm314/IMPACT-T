@@ -67,7 +67,7 @@ bends on the GPU 4, on the host 0, 111 out-of-map points 0
 
 The timer table at the end has new entries: `pt2ptfields`, `poisgpu`, `drftgpu`, `depgpu`, `gradgpu`, `kickgpu`, `syncgpu`, `bendgpu`, `csr`.
 
-**More than one GPU.** Particles are split over the ranks by count, not by position, and each rank deposits onto the whole grid; the charge density is summed over the ranks and every rank solves the whole grid on its GPU. Mesh runs therefore gain nothing from more GPUs: use one. N-body steps split their pair work over the GPUs (95 % efficiency measured on 2 GPUs at 1M particles).
+**More than one GPU.** Particles are split over the ranks by count, not by position, and each rank deposits onto the whole grid; the charge density is summed over the ranks and every rank solves the whole grid on its GPU. Mesh runs therefore gain nothing from more GPUs: use one. N-body steps split their pair work over the GPUs: 96 % efficiency on 8 GPUs at 6.24M particles (see [N-body steps on several GPUs](#n-body-steps-on-several-gpus)).
 
 **Several runs on one GPU** (for example the evaluations of an optimizer): start NVIDIA MPS (`nvidia-cuda-mps-control -d`) first. Without MPS the GPU time-slices between processes, and two or more runs at once gave half the throughput of one run at a time; with MPS, 2–8 runs at once gave 1.3× (780k particles) and 1.1× (6.24M) the throughput ([Benchmarks](#several-runs-at-once)).
 
@@ -214,6 +214,19 @@ One H100 against one 128-core node: 4.7–10× at 64³ and 14–40× at 128³ (t
 
 **Several CPU nodes** (6.24M): 256 ranks on 2 nodes and 512 on 4 are 1.42× and 1.80× faster than 128 ranks on one node at 64³, and 1.15× and 1.22× at 128³. The same 128 ranks spread over 2 or 4 nodes gained 2–6 % (these runs were before the exchange fix).
 
+## N-body steps on several GPUs
+
+Four point-to-point steps of the same beam at 6.24M particles, started at z = 0.2 m from a binary `-2` dump (`Flagdist = 168`, `-15` with r0 = 10 nm from the first step, no image charge past 2 cm), so each step is N² = 3.9e13 pair evaluations. One rank per H100 on one node; each rank computes the fields on its share of the targets (6.24M/P) from all 6.24M sources, which are gathered through the host every step. Time per step from IMPACT-T's `kickgpu` timer (gather, pair kernel and kick) and `pt2ptfields` timer (pair kernel), one run each:
+
+| GPUs | Step (s) | Pair kernel (s) | Gather and kick (s) | Speed-up | Efficiency |
+|---|---|---|---|---|---|
+| 1 | 235.3 | 235.3 | 0.0 | 1 | |
+| 2 | 120.1 | 119.7 | 0.5 | 1.96 | 98.0 % |
+| 4 | 60.5 | 60.1 | 0.5 | 3.89 | 97.2 % |
+| 8 | 30.6 | 30.1 | 0.5 | 7.70 | 96.3 % |
+
+The pair kernel runs at 1.65e11 pair evaluations per second per GPU here (1.98e11 in the 1M-particle unit benchmark, `tests/bench_pt2ptfields.f90`). The host gather of the 500 MB source array costs about 0.5 s a step at any GPU count, so it would matter only at much smaller particle counts or with many more GPUs. All GPUs ran at 1980 MHz; one reached its thermal limit at 80 °C in two 10 s samples, at 1965 MHz.
+
 ## Several runs at once
 
 Evaluations per hour at 64³, for an optimizer that runs many independent simulations:
@@ -232,8 +245,8 @@ Running several smaller CPU runs side by side on a node slows each by 2–3 % (2
 
 - **Determinism.** The GPU path is not bit-reproducible run to run (FP64 atomics in the deposit and the CSR histogram); two runs differ at the 1e-7 level in column-scaled diagnostics, more in near-zero centroids. The CPU path in the GPU executable is not exactly reproducible either (about 5e-15 in a dump; not investigated).
 - **Text output from nvfortran** (`g0` in `phase_Output`) prints about 16 significant digits, so a text dump written by the GPU executable does not read back bit-exactly; the binary `-2` dump does.
-- **Multi-GPU** gives no speed-up for mesh steps (the solve is repeated on every GPU), and the N-body gather goes through the host (`MPI_ALLGATHERV` of host buffers). Scaling of N-body steps beyond 2 GPUs was not measured on healthy hardware.
-- **N-body cost** is O(N²): about 200 s per step without image charge at 6.24M particles on one H100, so a full point-to-point run of a beamline at that size is a reference calculation, not a tuning tool.
+- **Multi-GPU** gives no speed-up for mesh steps (the solve is repeated on every GPU), and the N-body gather goes through the host (`MPI_ALLGATHERV` of host buffers): about 0.5 s a step at 6.24M particles, 2 % of an 8-GPU step. Multi-GPU runs were measured on one node only.
+- **N-body cost** is O(N²): 235 s per step without image charge at 6.24M particles on one H100 (31 s on 8), so a full point-to-point run of a beamline at that size is a reference calculation, not a tuning tool.
 - **Not tested on the GPU path:** `Nbunch > 1`, restart, `Flagdiag = 105`; untested element types fall back to the CPU per step.
 - **Element crossings** use a one-step window (see [Changes to the existing code](#changes-to-the-existing-code), "Noted, not changed"); the GPU path behaves as the CPU path.
 
@@ -277,4 +290,4 @@ Running several smaller CPU runs side by side on a node slows each by 2–3 % (2
 | `3d8a244` | | particle read-in on rank 0 |
 | `43a8b63` | | particle exchange overflow |
 | `990a9c5`, `08d4758`, `e98daab`, `cd1469f`, `a15e480`, `fe8a75f`, `7dbfa58`, `616b5dc` | | ids, reader bounds, MPI buffers, diagnostics NaN, uninitialized values, zero-field bend |
-| `bee821d` and the next | | these documents |
+| `bee821d` and later | | these documents |
