@@ -3265,7 +3265,11 @@
                             MPI_SUM,MPI_COMM_WORLD,ierr)
 
       do i = 1, nslice
-        gam2uncor2(i) = sqrt(gam2uncor2(i)/count(i))
+        if(count(i).gt.0) then
+          gam2uncor2(i) = sqrt(gam2uncor2(i)/count(i))
+        else
+          gam2uncor2(i) = 0.0d0  !empty slice (was 0/0 = NaN)
+        endif
       enddo
 
       call MPI_COMM_RANK(MPI_COMM_WORLD,my_rank,ierr)

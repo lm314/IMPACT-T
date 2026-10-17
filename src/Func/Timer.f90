@@ -169,10 +169,10 @@
         call MPI_REDUCE(sec,msec,1,MPI_DOUBLE_PRECISION,MPI_SUM,0, &
                         MPI_COMM_WORLD,ierr)
         call MPI_COMM_SIZE(MPI_COMM_WORLD,procs,ierr)
- 
-        msec = msec / procs
 
+        !msec is the reduced sum on rank 0 only
         if(myrank.eq.0) then
+          msec = msec / procs
           write( 6, "(a15, f11.5, a)" ) routine, msec, " seconds"
         endif
         end subroutine showtime_aux

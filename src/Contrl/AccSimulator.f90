@@ -32,6 +32,7 @@
         use FieldQuantclass
         use BeamLineElemclass
         use Ptclmgerclass
+        use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_positive_inf
         use BeamBunchclass
         use Timerclass
         use Inputclass
@@ -2596,7 +2597,11 @@
             vref = sqrt(1.d0-1.d0/gamin**2)
             !zz = Ebunch(ibb)%refptcl(5)*Scxlt - 0.5*vref*dtless*Scxlt
             call getparam_BeamLineElem(Blnelem(idbd),3,Bybend)
-            r0bend = Ebunch(1)%Mass/Clight*sqrt(gamin**2-1.0d0)/abs(Bybend)
+            if(Bybend.ne.0.0d0) then
+              r0bend = Ebunch(1)%Mass/Clight*sqrt(gamin**2-1.0d0)/abs(Bybend)
+            else  !no field: infinite radius, as the division by zero gave
+              r0bend = ieee_value(r0bend,ieee_positive_inf)
+            endif
             kkcsr = -2.0/(3*r0bend)**(1.0/3.0)
             !here, we need to make sure that the reference particle has the right
             !designed energy so that the reference trajectory through the bend
