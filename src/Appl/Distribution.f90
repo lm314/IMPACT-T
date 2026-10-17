@@ -1168,7 +1168,9 @@
           enddo
 
           do j = 1, avgpts
-            jj = j + myid*avgpts
+            !ids jlow..jhigh, the particles this rank holds (j + myid*avgpts
+            !repeated some ids and skipped others when nleft > 0)
+            jj = jlow + j - 1
             this%Pts1(7,j) = this%Charge/this%Mass
             this%Pts1(8,j) = this%Current/Scfreq/this%Npt*this%Charge/abs(this%Charge)
             this%Pts1(9,j) = jj
@@ -1412,7 +1414,9 @@
         deallocate(Ptcl)
 
         do j = 1, avgpts
-          jj = j + myid*avgpts
+          !ids jlow..jhigh, the particles this rank holds (j + myid*avgpts
+          !repeated some ids and skipped others when nleft > 0)
+          jj = jlow + j - 1
           this%Pts1(7,j) = this%Charge/this%Mass
           this%Pts1(8,j) = this%Current/Scfreq/this%Npt*this%Charge/abs(this%Charge)
           this%Pts1(9,j) = jj
@@ -1547,7 +1551,9 @@
         deallocate(Ptcl)
 
         do j = 1, avgpts
-          jj = j + myid*avgpts
+          !ids jlow..jhigh, the particles this rank holds (j + myid*avgpts
+          !repeated some ids and skipped others when nleft > 0)
+          jj = jlow + j - 1
           this%Pts1(7,j) = this%Charge/this%Mass
           this%Pts1(8,j) = this%Current/Scfreq/this%Npt*this%Charge/abs(this%Charge)
           this%Pts1(9,j) = jj
