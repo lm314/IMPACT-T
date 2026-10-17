@@ -196,7 +196,9 @@
 
         nmv0 = 0
         nout = ileft+iright+iup+idown
-        allocate(recv(9,nmv0))
+        !one spare column: the receives below pass recv(1,nmv0+1) as the
+        !buffer address, which must lie inside recv also when nothing arrives
+        allocate(recv(9,nmv0+1))
         allocate(temp1(9,nmv0))
         ij = 0
         call MPI_BARRIER(comm2d,ierr)
@@ -243,7 +245,7 @@
 !        endif
 
         deallocate(recv)
-        allocate(recv(9,numbuf+nmv0))
+        allocate(recv(9,numbuf+nmv0+1))
         do i = 1, nmv0
           recv(:,i) = temp1(:,i)
         enddo
