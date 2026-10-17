@@ -65,9 +65,11 @@ bends on the GPU 4, on the host 0, 111 out-of-map points 0
 - Device→host copies happen for outputs only (`-2` dumps, the final `fort.50`, and diagnostics other than `Flagdiag = 2`).
 - `111 out-of-map points` counts particles that were outside a type-111 map's grid (they get zero field; the CPU code reads outside its arrays there).
 
+**CPU N-body.** On the CPU, the pair loop takes the sources in blocks of `IMPACTT_PT2PT_BLOCK` particles (default 4096, 320 kB) so that a block stays in cache while every target on the rank reads it (see [Changes to the existing code](#changes-to-the-existing-code)). The fields do not depend on the block size. Any size from 256 to 16,384 gave the same speed on an AMD EPYC 9534 node and on an Apple M1 Max, so the default should not need changing.
+
 The timer table at the end has new entries: `pt2ptfields`, `poisgpu`, `drftgpu`, `depgpu`, `gradgpu`, `kickgpu`, `syncgpu`, `bendgpu`, `csr`.
 
-**More than one GPU.** Particles are split over the ranks by count, not by position, and each rank deposits onto the whole grid; the charge density is summed over the ranks and every rank solves the whole grid on its GPU. Mesh runs therefore gain nothing from more GPUs: use one. N-body steps split their pair work over the GPUs: 96 % efficiency on 8 GPUs at 6.24M particles (see [N-body steps on several GPUs](#n-body-steps-on-several-gpus)).
+**More than one GPU.** Particles are split over the ranks by count, not by position, and each rank deposits onto the whole grid; the charge density is summed over the ranks and every rank solves the whole grid on its GPU. Mesh runs therefore gain nothing from more GPUs: use one. N-body steps split their pair work over the GPUs: 96 % efficiency on 8 GPUs at 6.24M particles (see [N-body steps on several GPUs and CPU nodes](#n-body-steps-on-several-gpus-and-cpu-nodes)).
 
 **Several runs on one GPU** (for example the evaluations of an optimizer): start NVIDIA MPS (`nvidia-cuda-mps-control -d`) first. Without MPS the GPU time-slices between processes, and two or more runs at once gave half the throughput of one run at a time; with MPS, 2–8 runs at once gave 1.3× (780k particles) and 1.1× (6.24M) the throughput ([Benchmarks](#several-runs-at-once)).
 
@@ -112,6 +114,8 @@ These change the behaviour of the CPU code (except where noted), and each was fo
 - The call passed particle counts taken once before the time loop. Once a run can switch from the mesh to point-to-point (after the mesh steps have moved particles between ranks), that read and wrote outside the particle array (a segmentation fault in a 4-rank run). It now passes the current counts.
 - The pair formula computes 1/r once per pair and precomputes γ²/(γ+1) and γ/(γ+1) per source particle: 1.25× faster on the CPU, with the fields equal to an independent pair sum to 6e-12.
 
+**CPU N-body pair loop in cache-sized blocks** (`eb70333`, `Appl/BeamBunch.f90`), speed only. For each target, `pt2ptFields` read every source (80 bytes) from memory, so with many sources a full node was limited by memory bandwidth: with 6.24M sources, 128 ranks on a 2 × 64-core AMD EPYC 9534 node evaluated 6.8e9 pairs/s against 1.23e10 when the sources fit in cache, while one core alone ran at the same rate either way. The CPU loop now passes over the sources in blocks of `IMPACTT_PT2PT_BLOCK` (default 4096) and runs every target over each block, keeping each target's sums between blocks. The sources are still added in the same order, so the fields are bit-identical for any block size (`tests/test_pt2pt_block.f90`; a 128-rank N-body run gives byte-identical outputs). At 6.24M sources a node now runs at 1.23e10 pairs/s, 1.81× faster. The GPU loop is unchanged.
+
 **Particle read-in** (`3d8a244`, `990a9c5`, `Appl/Distribution.f90`):
 
 - `readold_Dist` (`Flagdist = 16`) and `read_Dist` (166) had every rank parse the whole `partcl.data` and keep its own slice. With 6.24M particles on 128 ranks that took 396 s (128 parses of a 911 MB file on a shared file system). Rank 0 now parses the file once and sends each rank its slice: 14 s, bit-identical results.
@@ -140,7 +144,7 @@ These change the behaviour of the CPU code (except where noted), and each was fo
 - The CSR constant `kkcsr = -2/(3*r0bend)**(1.0/3.0)` and several cube roots use a default-real exponent (an error of about 1e-8 relative).
 - `psiroot` (`Appl/Field.f90`, CSR) takes `(24*deltas/r0)**(1.0d0/3.0d0)`, NaN if `deltas < 0`; not checked.
 - The exchange routine's `msk` is an automatic array of one logical per local particle (25 MB of stack if one rank held 6.24M particles).
-- Element crossings (`-2`, `-4`, `-15`, `-19`, ...) act only on the step whose `[distance, distance+dzz]` contains them, and `dzz` uses the speed at the start of the step, so in the gun, where the beam accelerates, there are gaps between successive windows: an element placed in a gap never acts, and then blocks the later elements of its type. An element inside a bend's z range is skipped in the same way.
+- Element crossings (`-2`, `-4`, `-15`, `-19`, ...) act only on the step whose `[distance, distance+dzz]` contains them, and `dzz` uses the speed at the start of the step, so in the gun, where the beam accelerates, there are gaps between successive windows: an element placed in a gap never acts, and then blocks the later elements of its type. An element inside a bend's z range is skipped in the same way. On the first step the crossings are tested with `distance = 0` and `dzz` from `Bkenergy` (the beam's position is computed later in the step), so in a run started from a particle file mid-beamline (`Flagdist = 166/168`), a `-15` meant to act from the start needs V4 = 0; a V4 at the beam's own position is never crossed.
 
 # Design overview
 
@@ -165,6 +169,7 @@ Each test in `tests/` compares GPU kernels with the CPU routines they port, on t
 | Test | What it compares | Agreement |
 |---|---|---|
 | `test_pt2ptfields` | `pt2ptFields` (GPU and CPU) against an independent pair sum; analytic self-image | 5.9e-12 (image on), 7.4e-13 (off), exact; GPU and CPU fields bit-identical; 1, 2, 4, 8 GPUs bit-identical |
+| `test_pt2pt_block` | the blocked CPU pair loop against the unblocked loop, block sizes 1 to more than the source count, image on and off | bit-identical |
 | `test_poisson_gpu` | `openBC3D_gpu` against `openBC3Dnew` (FFTW), and a direct sum | φ ≤ 5e-13 up to 128×128×256; image potential as close to the direct sum as the CPU's (the 8-corner difference of the integrated Green's function limits both); rank counts bit-identical |
 | `test_particle_gpu` | drifts, emission, range, losses, deposit, gradients, the three kicks, external fields of 105 and 112 | kicks ≤ 7.3e-15 of the largest kick (point-to-point 2.9e-13); range, losses and gradients exact; deposit 6e-15 of max ρ |
 | `test_bend_gpu` | quadrupole, dipole and type-111 fields; bend-frame rotations, conversions, drifts; bend kicks; bend diagnostics; N-body kick in the bend frame | ≤ 2e-16 (quadrupole), ≤ 9e-16 (dipole), exact (111); final momenta ≤ 3.1e-16 of \|p\| |
@@ -214,7 +219,7 @@ One H100 against one 128-core node: 4.7–10× at 64³ and 14–40× at 128³ (t
 
 **Several CPU nodes** (6.24M): 256 ranks on 2 nodes and 512 on 4 are 1.42× and 1.80× faster than 128 ranks on one node at 64³, and 1.15× and 1.22× at 128³. The same 128 ranks spread over 2 or 4 nodes gained 2–6 % (these runs were before the exchange fix).
 
-## N-body steps on several GPUs
+## N-body steps on several GPUs and CPU nodes
 
 Four point-to-point steps of the same beam at 6.24M particles, started at z = 0.2 m from a binary `-2` dump (`Flagdist = 168`, `-15` with r0 = 10 nm from the first step, no image charge past 2 cm), so each step is N² = 3.9e13 pair evaluations. One rank per H100 on one node; each rank computes the fields on its share of the targets (6.24M/P) from all 6.24M sources, which are gathered through the host every step. Time per step from IMPACT-T's `kickgpu` timer (gather, pair kernel and kick) and `pt2ptfields` timer (pair kernel), one run each:
 
@@ -225,7 +230,18 @@ Four point-to-point steps of the same beam at 6.24M particles, started at z = 0.
 | 4 | 60.5 | 60.1 | 0.5 | 3.89 | 97.2 % |
 | 8 | 30.6 | 30.1 | 0.5 | 7.70 | 96.3 % |
 
-The pair kernel runs at 1.65e11 pair evaluations per second per GPU here (1.98e11 in the 1M-particle unit benchmark, `tests/bench_pt2ptfields.f90`). The host gather of the 500 MB source array costs about 0.5 s a step at any GPU count, so it would matter only at much smaller particle counts or with many more GPUs. All GPUs ran at 1980 MHz; one reached its thermal limit at 80 °C in two 10 s samples, at 1965 MHz.
+The pair kernel runs at 1.65e11 pair evaluations per second per GPU here. The 1.98e11 of the unit benchmark (`tests/bench_pt2ptfields.f90`) is with the image term on, where each source read serves two pairs (direct and image): the floating-point work per pair is the same (53 FP64 instructions), but the loads, flag tests and loop overhead per pair are smaller (43 against 55 other instructions, Nsight Compute). Measured with the same routine on one H100, image off gives 1.56e11 and image on 1.95e11, for 1M or 6.24M sources and for synthetic particles or this beam alike. The host gather of the 500 MB source array costs about 0.5 s a step at any GPU count, so it would matter only at much smaller particle counts or with many more GPUs. All GPUs ran at 1980 MHz; one reached its thermal limit at 80 °C in two 10 s samples, at 1965 MHz.
+
+**On CPU nodes**, the same beam and input, 2 steps, with the blocked CPU pair loop (`eb70333`, `-O3`) on 1–8 exclusive nodes of 2 × AMD EPYC 9534 (128 ranks a node; `UCX_TLS=self,sm` on one node, `self,sm,ud` on several). Every rank receives all 6.24M sources each step (`MPI_ALLGATHERV`). Step time from the time-stamped log, pair loop from the `pt2ptfields` timer, one run each:
+
+| Nodes | Ranks | Step (s) | Pair loop (s) | Speed-up | Efficiency |
+|---|---|---|---|---|---|
+| 1 | 128 | 3177 | 3167 | 1 | |
+| 2 | 256 | 1586 | 1585 | 2.00 | 100 % |
+| 4 | 512 | 795 | 793 | 4.00 | 100 % |
+| 8 | 1024 | 397 | 396 | 8.00 | 100 % |
+
+That is 1.23e10 pair evaluations per second per node at every node count. The gather itself takes 0.3–0.4 s on 1–8 nodes (timed separately; the transport and the collective component made no more than 0.1 s of difference). Without the blocked loop a node runs at 6.8e9 pairs/s, about 5,700 s a step on one node. Built with `-march=native` (AVX-512 and FMA, which changes the last bits of the fields), one node takes 2409 s a step. One H100 (235 s) does a step 13.5× faster than one node, and eight H100s (30.6 s) 13× faster than eight nodes.
 
 ## Several runs at once
 
@@ -240,6 +256,16 @@ Evaluations per hour at 64³, for an optimizer that runs many independent simula
 | one H100, 2 / 4 / 8 runs at once, MPS | 81.7 / 84.5 / 85.7 | | 13.8 / 14.0 / — |
 
 Running several smaller CPU runs side by side on a node slows each by 2–3 % (2 × 64, 4 × 32) to 28–34 % (8 × 16). One H100 with MPS gives about as many 780k evaluations per hour as four CPU nodes.
+
+## CPU or GPU?
+
+From the measurements above (one H100 against one 2 × 64-core EPYC 9534 node):
+
+- **One run, as fast as possible: the GPU.** It is 4.7–10× faster than a whole CPU node at 64³ and 14–40× at 128³ (256³ was not run on the CPU). More CPU nodes do not close the gap: 6.24M particles on 4 nodes (512 ranks) took 2.6× (64³) and 11× (128³) as long as one GPU. The GPU's lead grows with the grid, because the CPU's FFT transposes dominate, and at small grids it shrinks as the particle count grows.
+- **N-body: the GPU.** A 6.24M-particle step takes 235 s on one H100 and 31 s on eight, against 3177 s on one CPU node and 397 s on eight (1024 ranks; the CPU scales linearly) with the blocked pair loop: one H100 does the work of about 13 CPU nodes.
+- **Many independent runs (scans, optimizers): both.** Per device the GPU gives 4–5× the runs per hour of a CPU node (780k at 64³: 86 with MPS against 21 for eight 16-core runs at once; 6.24M: 14 against 2.9 for one 128-core run). A machine with many more CPU nodes than GPUs can get a similar total from its CPU nodes, and using both adds up.
+- **The CPU, for lattices that use what the GPU path does not port** (`Nbunch > 1`, restart, `Flagdiag = 105`, `Flagerr ≠ 0`, bends with `Flagbc ≠ 1`): those steps run on the host of the GPU executable, at about 35× the cost of a GPU step at 6.24M, so a lattice that needs them often is better on CPU nodes.
+- **Very small runs** (thousands of particles) were not measured on the GPU. There its per-step overhead dominates and a CPU node can run one per core, so the CPU may well be the better choice.
 
 # Known limitations
 
@@ -290,4 +316,5 @@ Running several smaller CPU runs side by side on a node slows each by 2–3 % (2
 | `3d8a244` | | particle read-in on rank 0 |
 | `43a8b63` | | particle exchange overflow |
 | `990a9c5`, `08d4758`, `e98daab`, `cd1469f`, `a15e480`, `fe8a75f`, `7dbfa58`, `616b5dc` | | ids, reader bounds, MPI buffers, diagnostics NaN, uninitialized values, zero-field bend |
+| `eb70333` | | CPU N-body pair loop in cache-sized blocks; `tests/test_pt2pt_block.f90` |
 | `bee821d` and later | | these documents |
