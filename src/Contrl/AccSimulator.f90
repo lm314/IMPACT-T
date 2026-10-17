@@ -158,6 +158,11 @@
         integer :: seedsize
 
         !start up MPI.
+        !per-bunch counts: only 1..Nbunch are set below, but sum(Np) and
+        !similar uses run over all Nbunchmax entries
+        Np = 0
+        Nplocal = 0
+        gbetz = 0.0d0
         call init_Input(time)
 
         ! initialize Timer.
