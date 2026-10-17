@@ -1,0 +1,9 @@
+# Page settings for the PDF versions of the GPU-port documents (make_pdf.sh, pandoc + typst)
+papersize: us-letter
+margin:
+  x: 2cm
+  y: 2cm
+fontsize: 10pt
+section-numbering: "1.1"
+toc: true
+toc-depth: 2
