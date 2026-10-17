@@ -786,6 +786,7 @@
 
         flagspc = 1
         flagbtw = 0 !initial no backward tws wakefield
+        tbtwstart = 1.d20 !set by a -6 element; was read uninitialized without one
         flagcsr = 1
         flagazmuth = 1
         if(Nemission.gt.0) then

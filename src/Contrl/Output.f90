@@ -3238,10 +3238,12 @@
       enddo
 
       do i = 1, nslice
-        epx(i) = sqrt((xx2(i)-xx(i)**2)*(px2(i)-px(i)**2)-&
-                      (xpx(i)-xx(i)*px(i))**2)
-        epy(i) = sqrt((yy2(i)-yy(i)**2)*(py2(i)-py(i)**2)-&
-                      (ypy(i)-yy(i)*py(i))**2)
+        !max(...,0): rounding makes the argument slightly negative for a slice
+        !of one particle or of nearly zero emittance (it was NaN)
+        epx(i) = sqrt(max((xx2(i)-xx(i)**2)*(px2(i)-px(i)**2)-&
+                      (xpx(i)-xx(i)*px(i))**2,0.0d0))
+        epy(i) = sqrt(max((yy2(i)-yy(i)**2)*(py2(i)-py(i)**2)-&
+                      (ypy(i)-yy(i)*py(i))**2,0.0d0))
       enddo
 
       gam2uncor = 0.0
