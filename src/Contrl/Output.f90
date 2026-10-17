@@ -248,7 +248,7 @@
           cubz = tmpgl(24)*den1
           fthz = tmpgl(25)*den1
 !          z03 = (abs(cubz-3*sqz*z0+2*z0*z0*z0))**(1.0/3.0)
-          z03 = cubz**(1.0/3.0)
+          z03 = sign(abs(cubz)**(1.0/3.0),cubz)
 !          z04 = sqrt(sqrt(abs(fthz-4*cubz*z0+6*sqz*z0*z0-3*z0*z0*z0*z0)))
           z04 = sqrt(sqrt(fthz))
           cubpz = tmpgl(26)*den1
@@ -577,12 +577,12 @@
           cubz = tmpgl(24)*den1
           fthz = tmpgl(25)*den1
 !          z03 = (abs(cubz-3*sqz*z0+2*z0*z0*z0))**(1.0/3.0)
-          z03 = cubz**(1.0/3.0)
+          z03 = sign(abs(cubz)**(1.0/3.0),cubz)
 !          z04 = sqrt(sqrt(abs(fthz-4*cubz*z0+6*sqz*z0*z0-3*z0*z0*z0*z0)))
           z04 = sqrt(sqrt(fthz))
           cubpz = tmpgl(26)*den1
           fthpz = tmpgl(27)*den1
-          pz03 = cubpz**(1.0/3.0)
+          pz03 = sign(abs(cubpz)**(1.0/3.0),cubpz)
           pz04 = sqrt(sqrt(fthpz))
           !pz03 = (abs(cubpz-3*sqpz*pz0+2*pz0*pz0*pz0))**(1.0/3.0)
           !pz04 = sqrt(sqrt(abs(fthpz-4*cubpz*pz0+6*sqpz*pz0*pz0-&
@@ -955,27 +955,27 @@
           zpz = tmpgl(9)*den1 
           cubx = tmpgl(10)*den1
           fthx = tmpgl(11)*den1
-          x03 = cubx**(1.0d0/3.0d0)
+          x03 = sign(abs(cubx)**(1.0d0/3.0d0),cubx)
           x04 = sqrt(sqrt(fthx))
           cubpx = tmpgl(12)*den1
           fthpx = tmpgl(13)*den1
-          px03 = cubpx**(1.0d0/3.0d0)
+          px03 = sign(abs(cubpx)**(1.0d0/3.0d0),cubpx)
           px04 = sqrt(sqrt(fthpx))
           cuby = tmpgl(14)*den1
           fthy = tmpgl(15)*den1
-          y03 = cuby**(1.0d0/3.0d0)
+          y03 = sign(abs(cuby)**(1.0d0/3.0d0),cuby)
           y04 = sqrt(sqrt(fthy))
           cubpy = tmpgl(16)*den1
           fthpy = tmpgl(17)*den1
-          py03 = cubpy**(1.0d0/3.0d0)
+          py03 = sign(abs(cubpy)**(1.0d0/3.0d0),cubpy)
           py04 = sqrt(sqrt(fthpy))
           cubz = tmpgl(18)*den1
           fthz = tmpgl(19)*den1
-          z03 = cubz**(1.0d0/3.0d0)
+          z03 = sign(abs(cubz)**(1.0d0/3.0d0),cubz)
           z04 = sqrt(sqrt(fthz))
           cubpz = tmpgl(20)*den1
           fthpz = tmpgl(21)*den1
-          pz03 = cubpz**(1.0d0/3.0d0)
+          pz03 = sign(abs(cubpz)**(1.0d0/3.0d0),cubpz)
           pz04 = sqrt(sqrt(fthpz))
           epsx2 = (sqsum1*sqsum2-xpx*xpx)
           epsy2 = (sqsum3*sqsum4-ypy*ypy)
@@ -1342,12 +1342,12 @@
           cubz = tmpgl(24)*den1
           fthz = tmpgl(25)*den1
 !          z03 = (abs(cubz-3*sqz*z0+2*z0*z0*z0))**(1.0/3.0)
-          z03 = cubz**(1.0/3.0)
+          z03 = sign(abs(cubz)**(1.0/3.0),cubz)
 !          z04 = sqrt(sqrt(abs(fthz-4*cubz*z0+6*sqz*z0*z0-3*z0*z0*z0*z0)))
           z04 = sqrt(sqrt(fthz))
           cubpz = tmpgl(26)*den1
           fthpz = tmpgl(27)*den1
-          pz03 = cubpz**(1.0/3.0)
+          pz03 = sign(abs(cubpz)**(1.0/3.0),cubpz)
           pz04 = sqrt(sqrt(fthpz))
           !pz03 = (abs(cubpz-3*sqpz*pz0+2*pz0*pz0*pz0))**(1.0/3.0)
           !pz04 = sqrt(sqrt(abs(fthpz-4*cubpz*pz0+6*sqpz*pz0*pz0-&
@@ -1684,7 +1684,7 @@
           cubz = tmpgl(24)*den1
           fthz = tmpgl(25)*den1
 !          z03 = (abs(cubz-3*sqz*z0+2*z0*z0*z0))**(1.0/3.0)
-          z03 = cubz**(1.0/3.0)
+          z03 = sign(abs(cubz)**(1.0/3.0),cubz)
 !          z04 = sqrt(sqrt(abs(fthz-4*cubz*z0+6*sqz*z0*z0-3*z0*z0*z0*z0)))
           z04 = sqrt(sqrt(fthz))
           cubpz = tmpgl(26)*den1
@@ -2143,29 +2143,29 @@
           zpz = tmpgl(15)*den1 
           cubx = tmpgl(16)*den1
           fthx = tmpgl(17)*den1
-          x03 = ((cubx-3*sqx*x0+2*x0*x0*x0))**(1.0/3.0)
+          x03 = sign(abs(((cubx-3*sqx*x0+2*x0*x0*x0)))**(1.0/3.0),((cubx-3*sqx*x0+2*x0*x0*x0)))
           x04 = sqrt(sqrt(abs(fthx-4*cubx*x0+6*sqx*x0*x0-3*x0*x0*x0*x0)))
           cubpx = tmpgl(18)*den1
           fthpx = tmpgl(19)*den1
-          px03 = ((cubpx-3*sqpx*px0+2*px0*px0*px0))**(1.0/3.0)
+          px03 = sign(abs(((cubpx-3*sqpx*px0+2*px0*px0*px0)))**(1.0/3.0),((cubpx-3*sqpx*px0+2*px0*px0*px0)))
           px04 = sqrt(sqrt((fthpx-4*cubpx*px0+6*sqpx*px0*px0-&
                  3*px0*px0*px0*px0)))
           cuby = tmpgl(20)*den1
           fthy = tmpgl(21)*den1
-          y03 = ((cuby-3*sqy*y0+2*y0*y0*y0))**(1.0/3.0)
+          y03 = sign(abs(((cuby-3*sqy*y0+2*y0*y0*y0)))**(1.0/3.0),((cuby-3*sqy*y0+2*y0*y0*y0)))
           y04 = sqrt(sqrt((fthy-4*cuby*y0+6*sqy*y0*y0-3*y0*y0*y0*y0)))
           cubpy = tmpgl(22)*den1
           fthpy = tmpgl(23)*den1
-          py03 = ((cubpy-3*sqpy*py0+2*py0*py0*py0))**(1.0/3.0)
+          py03 = sign(abs(((cubpy-3*sqpy*py0+2*py0*py0*py0)))**(1.0/3.0),((cubpy-3*sqpy*py0+2*py0*py0*py0)))
           py04 = sqrt(sqrt((fthpy-4*cubpy*py0+6*sqpy*py0*py0-&
                  3*py0*py0*py0*py0)))
           cubz = tmpgl(24)*den1
           fthz = tmpgl(25)*den1
-          z03 = cubz**(1.0d0/3.0d0)
+          z03 = sign(abs(cubz)**(1.0d0/3.0d0),cubz)
           z04 = sqrt(sqrt(fthz))
           cubpz = tmpgl(26)*den1
           fthpz = tmpgl(27)*den1
-          pz03 = cubpz**(1.0d0/3.0d0)
+          pz03 = sign(abs(cubpz)**(1.0d0/3.0d0),cubpz)
           pz04 = sqrt(sqrt(fthpz))
           epsx2 = (sqsum1*sqsum2-xpx*xpx)
           epsy2 = (sqsum3*sqsum4-ypy*ypy)
@@ -2305,7 +2305,7 @@
             outbuf(5,k) = outbuf(5,k)*Scxlt
           enddo
           do i = 1, np-1
-            call MPI_RECV(recvbuf(1,1),nptlist(i),MPI_DOUBLE_PRECISION,&
+            call MPI_RECV(recvbuf,nptlist(i),MPI_DOUBLE_PRECISION,&
                           i,1,MPI_COMM_WORLD,status,ierr)
             do j = 1, nptlist(i)/9,samplePeriod
               k = k + 1
@@ -2333,7 +2333,7 @@
 
           enddo
           do i = 1, np-1
-            call MPI_RECV(recvbuf(1,1),nptlist(i),MPI_DOUBLE_PRECISION,&
+            call MPI_RECV(recvbuf,nptlist(i),MPI_DOUBLE_PRECISION,&
                           i,1,MPI_COMM_WORLD,status,ierr) 
         
             do j = 1, nptlist(i)/9,samplePeriod
@@ -2348,7 +2348,7 @@
           close(nfile)
           call flush(nfile)
         else
-          call MPI_SEND(this%Pts1(1,1),sixnpt,MPI_DOUBLE_PRECISION,0,1,&
+          call MPI_SEND(this%Pts1,sixnpt,MPI_DOUBLE_PRECISION,0,1,&
                         MPI_COMM_WORLD,ierr)
         endif
 
@@ -3559,7 +3559,7 @@
           cubz = tmpgl(24)*den1
           fthz = tmpgl(25)*den1
 !          z03 = (abs(cubz-3*sqz*z0+2*z0*z0*z0))**(1.0/3.0)
-          z03 = cubz**(1.0/3.0)
+          z03 = sign(abs(cubz)**(1.0/3.0),cubz)
 !          z04 = sqrt(sqrt(abs(fthz-4*cubz*z0+6*sqz*z0*z0-3*z0*z0*z0*z0)))
           z04 = sqrt(sqrt(fthz))
           cubpz = tmpgl(26)*den1
