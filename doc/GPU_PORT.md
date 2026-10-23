@@ -6,7 +6,7 @@ date: "October 2026"
 
 # Summary
 
-The branch `gpu-port-mvp` (on top of `master` at `78c029b`) runs the whole time step of IMPACT-T on one or more NVIDIA GPUs: emission, drifts, deposition, the Poisson solve with image charge, the field gradients, the external fields of the main element types, the kick, the diagnostics, the type-4 bend loop with CSR, and the point-to-point (N-body) space charge, including inside bends. Particles stay on the GPU for the whole run, and any step that uses a feature that is not ported falls back to the existing CPU code for that step only. The CPU build is unchanged apart from the bug fixes listed in [Changes to the existing code](#changes-to-the-existing-code); without `USE_GPU` no GPU code is compiled.
+The branch `gpu-port-mvp` (on top of `master` at `78c029b`) runs the whole time step of IMPACT-T on one or more NVIDIA GPUs: emission, drifts, deposition, the Poisson solve with image charge, the field gradients, the external fields of the main element types, the kick, the diagnostics, the type-4 bend loop with CSR, and the point-to-point (N-body) space charge, including inside bends. Particles stay on the GPU for the whole run, and any step that uses a feature that is not ported falls back to the existing CPU code for that step only. The CPU build is unchanged apart from the bug fixes and one speed change (the N-body pair loop in cache-sized blocks, with bit-identical results) listed in [Changes to the existing code](#changes-to-the-existing-code); without `USE_GPU` no GPU code is compiled.
 
 On a 1 pC photoinjector beamline (an X-band gun and three linac sections, cathode to 3.1 m, 49,390 steps), one NVIDIA H100 runs a 6.24-million-particle simulation (one macroparticle per electron) in 264 s at 64³ and 336 s at 128³. One 128-core node of AMD EPYC 9534 CPUs takes 1253 s and about 4650 s for the same runs, and the GPU results agree with the CPU results to the eight digits IMPACT-T prints (rms sizes, emittances, bunch length, energy and energy spread at the end of the beamline). Details are in [Validation](#validation) and [Benchmarks](#benchmarks).
 
@@ -35,7 +35,7 @@ cmake --build build-gpu -j 16          # -> build-gpu/ImpactTexe-mpi-gpu
 
 - `USE_GPU=ON` requires `nvfortran` and stops with a message otherwise. It adds `-acc=gpu -gpu=cc90 -gpu=maxregcount:64 -cuda`, links cuFFT, compiles the three GPU source files and defines `USE_GPU`. For another GPU generation, change `cc90` in `src/CMakeLists.txt`.
 - `-gpu=maxregcount:64` was chosen by a sweep over the N-body kernel's register cap (+3 % over the default; much lower caps spill).
-- CPU builds (`USE_GPU=OFF`, gfortran or nvfortran, serial or MPI) are unchanged and produce the same executables as before.
+- CPU builds (`USE_GPU=OFF`, gfortran or nvfortran, serial or MPI) are built as before and contain no GPU code; their source changes are listed in [Changes to the existing code](#changes-to-the-existing-code).
 - The tests in `tests/` are not part of the CMake build; `tests/build_test.sh BUILD_DIR tests/<test>.f90` links one against an existing build (see `tests/README.md`).
 
 # Running
