@@ -136,7 +136,7 @@ These change the behaviour of the CPU code (except where noted), and each was fo
 - `showtime_aux` divided the `MPI_REDUCE` result on every rank, where it is defined on rank 0 only (`616b5dc`).
 - A dipole with zero field (V3 = 0) divided by zero for the bend radius (`616b5dc`); the radius is now set to +∞ explicitly, the value the division gave.
 
-**Zero-length MPI buffers** (`e98daab`, `cd1469f`): `ptsmv2_ptclmger` and `phase_Output` passed an element just past the end of an array (or of an empty array) as the buffer of a receive or send of zero elements. Harmless, but it stops a bounds-checked build; one spare column, and whole-array arguments.
+**Zero-length MPI buffers** (`e98daab`, `cd1469f`): `ptsmv2_ptclmger` and `phase_Output` passed an element just past the end of an array (or of an empty array) as the buffer of a receive or send of zero elements. Harmless, but it stops a bounds-checked build; one spare column, and whole-array arguments (the serial build's MPI stub, `mpistub.f90`, gets the matching 2-D variants of `MPI_SEND` and `MPI_RECV`).
 
 **Noted, not changed:**
 

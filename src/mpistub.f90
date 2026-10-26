@@ -17,14 +17,14 @@
         end interface
         interface MPI_SEND
           module procedure MPI_SEND1,MPI_SEND2,MPI_SEND3,MPI_SEND4,&
-                           MPI_SEND5,MPI_SEND6,MPI_SEND7
+                           MPI_SEND5,MPI_SEND6,MPI_SEND7,MPI_SEND8
         end interface
         interface MPI_IRECV
           module procedure MPI_IRECV1,MPI_IRECV2,MPI_IRECV3,MPI_IRECV4,&
                            MPI_IRECV5,MPI_IRECV6
         end interface
         interface MPI_RECV
-          module procedure MPI_RECV1,MPI_RECV2,MPI_RECV3,MPI_RECV4
+          module procedure MPI_RECV1,MPI_RECV2,MPI_RECV3,MPI_RECV4,MPI_RECV5
         end interface
         interface MPI_REDUCE
           module procedure MPI_REDUCE1,MPI_REDUCE2,MPI_REDUCE3,MPI_REDUCE4
@@ -222,6 +222,12 @@
           double precision, dimension(:,:,:) :: tmplc
         end subroutine MPI_SEND7
 
+        !> whole 2-D double precision arrays (phase_Output passes Pts1)
+        subroutine  MPI_SEND8(tmplc,num,MPI_DOUBLE_PRECISION,&
+                                  num1,num2,MPI_COMM_WORLD,ierr)
+          double precision, dimension(:,:) :: tmplc
+        end subroutine MPI_SEND8
+
         !> mpi isend command
         subroutine  MPI_ISEND1(tmplc,num,MPI_DOUBLE_PRECISION,&
                                   num1,num2,MPI_COMM_WORLD,num3,ierr)
@@ -278,6 +284,13 @@
           integer, dimension(:) :: tmplc
           integer, dimension(:) :: status
         end subroutine MPI_RECV4
+
+        !> whole 2-D double precision arrays (phase_Output's receive buffer)
+        subroutine  MPI_RECV5(tmplc,num,MPI_DOUBLE_PRECISION,&
+                                  num1,num2,MPI_COMM_WORLD,status,ierr)
+          double precision, dimension(:,:) :: tmplc
+          integer, dimension(:) :: status
+        end subroutine MPI_RECV5
  
         !> mpi irecv command
         subroutine  MPI_IRECV1(tmplc,num,MPI_DOUBLE_PRECISION,&
