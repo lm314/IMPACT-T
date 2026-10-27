@@ -101,12 +101,12 @@ program test_pt2ptfields
         !//Check A: image on (before zimage) -> production routine should
         !//match the direct+image reference with the self-image term (no
         !//exclusion of j==gk in the image sum).
-        call pt2ptFields(nptlc,targets,myoffset,npttot,sources,.true.,R0,&
+        call pt2ptFields(nptlc,targets,myoffset,npttot,sources,.true.,R0,R0,&
                           ex,ey,ez,bx,by,bz)
 
         !//Check B: image off (after zimage, or Flagimg=0) -> production
         !//routine should match the direct-only reference.
-        call pt2ptFields(nptlc,targets,myoffset,npttot,sources,.false.,R0,&
+        call pt2ptFields(nptlc,targets,myoffset,npttot,sources,.false.,R0,R0,&
                           exn,eyn,ezn,bxn,byn,bzn)
 
         diffA = 0.0d0
@@ -174,6 +174,10 @@ program test_pt2ptfields
         !//for a single particle at rest (gamma=1, beta=0) that is exactly
         !//-1/(2z)^2 in ez.
         if(myid.eq.0) call check_single_particle_image()
+
+        !//Check E: the image floor r0img is separate from r0 and saturates
+        !//the self-image at 2z = r0img.
+        if(myid.eq.0) call check_r0img_saturation()
 
         call MPI_FINALIZE(ierr)
 
@@ -328,7 +332,7 @@ contains
         s1(9,1) = 0.5d0
         s1(10,1) = 0.5d0
 
-        call pt2ptFields(1,t1,0,1,s1,.true.,R0,e1x,e1y,e1z,b1x,b1y,b1z)
+        call pt2ptFields(1,t1,0,1,s1,.true.,R0,R0,e1x,e1y,e1z,b1x,b1y,b1z)
 
         analytic = -1.0d0/(2.0d0*z0)**2
         diff = abs(e1z(1)-analytic)/abs(analytic)
@@ -340,5 +344,62 @@ contains
           print *,'FAIL'
         endif
         end subroutine check_single_particle_image
+
+        !//Check E: a single particle at rest at height z0 with r0img = 1e-3
+        !//and r0 = 5e-3 (r0 is larger, so it must not matter for the image):
+        !//ez = -1/(2z0)^2 for 2z0 > r0img and -(2z0)/r0img^3 below it (the
+        !//pair cutoff is a linear core: the field peaks at 2z0 = r0img and
+        !//falls to zero inside, it does not stay constant). Ends
+        !//and a check that r0img = r0 caps the image at the pair floor (the
+        !//whole-run bit identity is checked with a -15 without V5).
+        subroutine check_r0img_saturation()
+        implicit none
+        double precision, dimension(4,1) :: t1
+        double precision, dimension(10,1) :: s1
+        double precision, dimension(1) :: e1x,e1y,e1z,b1x,b1y,b1z
+        double precision, dimension(1) :: f1x,f1y,f1z,c1x,c1y,c1z
+        double precision, parameter :: rimg = 1.0d-3, rpair = 5.0d-3  !//r0 is larger than r0img
+        double precision, dimension(7) :: z0s
+        double precision :: expect,diff,worst
+        integer :: k
+
+        z0s = (/ 4.0d-3, 1.5d-3, 1.0d-3, 0.7d-3, 0.5d-3, 0.2d-3, 0.01d-3 /)
+        worst = 0.0d0
+        do k = 1, 7
+          t1 = 0.0d0; s1 = 0.0d0
+          t1(3,1) = z0s(k); t1(4,1) = 1.0d0
+          s1(3,1) = z0s(k); s1(7,1) = 1.0d0; s1(8,1) = 1.0d0
+          s1(9,1) = 0.5d0; s1(10,1) = 0.5d0
+          call pt2ptFields(1,t1,0,1,s1,.true.,rpair,rimg,e1x,e1y,e1z,b1x,b1y,b1z)
+          if(2.0d0*z0s(k).gt.rimg) then
+            expect = -1.0d0/(2.0d0*z0s(k))**2
+          else
+            expect = -2.0d0*z0s(k)/rimg**3
+          endif
+          diff = abs(e1z(1)-expect)/abs(expect)
+          worst = max(worst,diff)
+          print '(A,ES10.3,A,ES14.6,A,ES14.6)','CheckE 2z=',2.0d0*z0s(k),&
+             ' computed=',e1z(1),' expected=',expect
+        enddo
+        print '(A,ES10.3)','CheckE worst rel diff=',worst
+        if(worst.lt.1.0d-10) then
+          print *,'PASS'
+        else
+          print *,'FAIL'
+        endif
+
+        !//r0img = r0: the image is capped at the pair floor
+        t1 = 0.0d0; s1 = 0.0d0
+        t1(3,1) = 0.3d-3; t1(4,1) = 1.0d0
+        s1(3,1) = 0.3d-3; s1(7,1) = 1.0d0; s1(8,1) = 1.0d0
+        s1(9,1) = 0.5d0; s1(10,1) = 0.5d0
+        call pt2ptFields(1,t1,0,1,s1,.true.,rpair,rpair,e1x,e1y,e1z,b1x,b1y,b1z)
+        call pt2ptFields(1,t1,0,1,s1,.true.,rpair,rpair,f1x,f1y,f1z,c1x,c1y,c1z)
+        if(e1z(1).eq.f1z(1) .and. abs(e1z(1)+2.0d0*0.3d-3/rpair**3).lt.1.0d-14*abs(e1z(1))) then
+          print *,'PASS (r0img = r0 caps the image at r0)'
+        else
+          print *,'FAIL r0img = r0',e1z(1),-2.0d0*0.3d-3/rpair**3
+        endif
+        end subroutine check_r0img_saturation
 
 end program test_pt2ptfields

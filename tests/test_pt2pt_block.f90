@@ -52,7 +52,7 @@ program test_pt2pt_block
           call reference(NLOC,targets,OFFSET,NTOT,sources,image,R0,g)
           do ib = 1, NB
             pt2pt_nblk = BLOCKS(ib)
-            call pt2ptFields(NLOC,targets,OFFSET,NTOT,sources,image,R0, &
+            call pt2ptFields(NLOC,targets,OFFSET,NTOT,sources,image,R0,R0, &
                              f(:,1),f(:,2),f(:,3),f(:,4),f(:,5),f(:,6))
             nbad = count(f.ne.g)
             nbadall = nbadall + nbad

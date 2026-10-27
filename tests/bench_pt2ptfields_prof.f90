@@ -52,11 +52,11 @@ program bench_pt2ptfields_prof
         !//one untimed warm-up call (first-touch GPU allocation), then one
         !//timed call -- ncu profiles whichever kernel launch(es) it's
         !//told to via --launch-skip/--launch-count.
-        call pt2ptFields(NTOT,targets,0,NTOT,sources,.true.,R0,&
+        call pt2ptFields(NTOT,targets,0,NTOT,sources,.true.,R0,R0,&
                           ex,ey,ez,bx,by,bz)
 
         call starttime_Timer(t0)
-        call pt2ptFields(NTOT,targets,0,NTOT,sources,.true.,R0,&
+        call pt2ptFields(NTOT,targets,0,NTOT,sources,.true.,R0,R0,&
                           ex,ey,ez,bx,by,bz)
         elapsed = elapsedtime_Timer(t0)
         print '(A,I0)',       'NTOT    = ', NTOT

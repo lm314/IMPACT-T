@@ -257,10 +257,10 @@ contains
       call copy_bunch(bc,bg)
       p0 = bc%Pts1
       call kickpt2ptImg_BeamBunch(n,bc%Pts1,tt,bc%Charge,bc%Mass,1.0d0,be,zbe, &
-                                  idr,4,1,4,fld,totchrg,r0,n,n,img)
+                                  idr,4,1,4,fld,totchrg,r0,r0,n,n,img)
       call mark_host_newer(1)
       call build_active_table(be,zbe,idr,fld,1,4,tt,okt,nm)
-      call kickpt2pt_gpu(1,bg,tt,1.0d0,totchrg,r0,n,n,img)
+      call kickpt2pt_gpu(1,bg,tt,1.0d0,totchrg,r0,r0,n,n,img)
       call ensure_host(1,bg)
       call report_kick("kickpt2pt kick px",bc%Pts1(2,:),bg%Pts1(2,:),p0(2,:),n,1.0d-11)
       call report_kick("kickpt2pt kick py",bc%Pts1(4,:),bg%Pts1(4,:),p0(4,:),n,1.0d-11)

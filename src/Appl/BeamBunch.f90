@@ -1777,13 +1777,13 @@
         !//rays(5,n) > 0 (i.e. z>0).
         subroutine kickpt2ptImg_BeamBunch(nptlc,rays,&
         tg,chge,mass,dt,beamelem,zbeamelem,idrfile,nbeamln,ibinit,&
-        ibend,fldmap,totchrg,r0,npttot,nptrue,flagimgnow)
+        ibend,fldmap,totchrg,r0,r0img,npttot,nptrue,flagimgnow)
         implicit none
         include 'mpif.h'
         integer, intent(in) :: nptlc,nbeamln,ibinit,ibend,npttot,nptrue
         integer, intent(in) :: flagimgnow
         double precision, intent (inout), dimension(9,nptlc) :: rays
-        double precision, intent (in) :: dt,mass,chge,tg,totchrg,r0
+        double precision, intent (in) :: dt,mass,chge,tg,totchrg,r0,r0img
         type (BeamLineElem), dimension(:), intent(in) :: beamelem
         double precision, dimension(:,:), intent(in) :: zbeamelem
         type (fielddata), dimension(:), intent(in) :: fldmap
@@ -1871,7 +1871,7 @@
         !//and include each particle's own image (no j.ne.n exclusion).
         image = (flagimgnow.eq.1)
         call starttime_Timer(t1)
-        call pt2ptFields(nptlc,targets,myoffset,npttot,sources,image,r0,&
+        call pt2ptFields(nptlc,targets,myoffset,npttot,sources,image,r0,r0img,&
                           ex,ey,ez,bx,by,bz)
         t_pt2ptfields = t_pt2ptfields + elapsedtime_Timer(t1)
         deallocate(sources,recvcounts,displs)
@@ -1962,25 +1962,27 @@
         !> @param[in] image whether to add the image term (Flagimg and
         !>            before zimage); each particle then also feels its own
         !>            image (no self-exclusion in the image term)
-        !> @param[in] r0 close-encounter cutoff radius
+        !> @param[in] r0 close-encounter cutoff radius of the direct pairs
+        !> @param[in] r0img the same for the image pairs (0 in the input
+        !>            means r0; the caller has already applied that)
         !> @param[out] ex,ey,ez,bx,by,bz(nptlc): fields at the local targets,
         !>            not yet scaled by coefE or combined with external fields
         !--------------------------------------------------------------------------------------
         !KEEP THIS BODY IDENTICAL to pt2ptFields_dev below (USE_GPU).
         subroutine pt2ptFields(nptlc,targets,myoffset,npttot,sources,&
-                                image,r0,ex,ey,ez,bx,by,bz)
+                                image,r0,r0img,ex,ey,ez,bx,by,bz)
         implicit none
         integer, intent(in) :: nptlc,npttot,myoffset
         double precision, dimension(4,nptlc), intent(in) :: targets
         double precision, dimension(10,npttot), intent(in) :: sources
         logical, intent(in) :: image
-        double precision, intent(in) :: r0
+        double precision, intent(in) :: r0,r0img
         double precision, dimension(nptlc), intent(out) :: ex,ey,ez,bx,by,bz
         integer :: n,j,gidx
         double precision :: rijx,rijy,rijz,rijx2,rijy2,rijz2,rij2sq,rinv,rinv3
         double precision :: betajx,betajy,betajz,gammaj,c1j,c2j,tmp1,tmp2
         double precision :: sumex,sumey,sumez,sumbx,sumby,sumbz
-        double precision :: tx,ty,tz,r0sq,r0inv
+        double precision :: tx,ty,tz,r0sq,r0inv,r0imgsq,r0imginv
         logical :: valid
         integer :: jb,je,ios
         character(len=32) :: env
@@ -1990,6 +1992,8 @@
         !//inside the pair loop.
         r0sq = r0*r0
         r0inv = 1.0d0/r0
+        r0imgsq = r0img*r0img
+        r0imginv = 1.0d0/r0img
 
 #ifdef _OPENACC
         !$acc data copyin(targets,sources) copyout(ex,ey,ez,bx,by,bz)
@@ -2064,10 +2068,10 @@
                   rijz2 = rijz + tmp1*betajz
                   rij2sq = rijx2**2+rijy2**2+rijz2**2
                   tmp2 = c2j*(betajx*rijx2+betajy*rijy2+betajz*rijz2)
-                  if(rij2sq.gt.r0sq) then
+                  if(rij2sq.gt.r0imgsq) then
                     rinv = 1.0d0/sqrt(rij2sq)
                   else
-                    rinv = r0inv
+                    rinv = r0imginv
                   endif
                   rinv3 = rinv*rinv*rinv
                   sumex = sumex - gammaj*(rijx2-tmp2*betajx)*rinv3
@@ -2179,10 +2183,10 @@
                     rijz2 = rijz + tmp1*betajz
                     rij2sq = rijx2**2+rijy2**2+rijz2**2
                     tmp2 = c2j*(betajx*rijx2+betajy*rijy2+betajz*rijz2)
-                    if(rij2sq.gt.r0sq) then
+                    if(rij2sq.gt.r0imgsq) then
                       rinv = 1.0d0/sqrt(rij2sq)
                     else
-                      rinv = r0inv
+                      rinv = r0imginv
                     endif
                     rinv3 = rinv*rinv*rinv
                     sumex = sumex - gammaj*(rijx2-tmp2*betajx)*rinv3
@@ -2215,19 +2219,19 @@
         !> BODIES IDENTICAL.
         !--------------------------------------------------------------------------------------
         subroutine pt2ptFields_dev(nptlc,targets,myoffset,npttot,sources,&
-                                image,r0,ex,ey,ez,bx,by,bz)
+                                image,r0,r0img,ex,ey,ez,bx,by,bz)
         implicit none
         integer, intent(in) :: nptlc,npttot,myoffset
         double precision, device, dimension(4,nptlc), intent(in) :: targets
         double precision, device, dimension(10,npttot), intent(in) :: sources
         logical, intent(in) :: image
-        double precision, intent(in) :: r0
+        double precision, intent(in) :: r0,r0img
         double precision, device, dimension(nptlc), intent(out) :: ex,ey,ez,bx,by,bz
         integer :: n,j,gidx
         double precision :: rijx,rijy,rijz,rijx2,rijy2,rijz2,rij2sq,rinv,rinv3
         double precision :: betajx,betajy,betajz,gammaj,c1j,c2j,tmp1,tmp2
         double precision :: sumex,sumey,sumez,sumbx,sumby,sumbz
-        double precision :: tx,ty,tz,r0sq,r0inv
+        double precision :: tx,ty,tz,r0sq,r0inv,r0imgsq,r0imginv
         logical :: valid
 
         !//r0 enters every pair only through 1/r0 and 1/r0^2, so precompute
@@ -2235,6 +2239,8 @@
         !//inside the pair loop.
         r0sq = r0*r0
         r0inv = 1.0d0/r0
+        r0imgsq = r0img*r0img
+        r0imginv = 1.0d0/r0img
 
         !$acc parallel loop gang vector &
         !$acc   private(j,gidx,tx,ty,tz,valid,sumex,sumey,sumez,sumbx,sumby, &
@@ -2307,10 +2313,10 @@
                   rijz2 = rijz + tmp1*betajz
                   rij2sq = rijx2**2+rijy2**2+rijz2**2
                   tmp2 = c2j*(betajx*rijx2+betajy*rijy2+betajz*rijz2)
-                  if(rij2sq.gt.r0sq) then
+                  if(rij2sq.gt.r0imgsq) then
                     rinv = 1.0d0/sqrt(rij2sq)
                   else
-                    rinv = r0inv
+                    rinv = r0imginv
                   endif
                   rinv3 = rinv*rinv*rinv
                   sumex = sumex - gammaj*(rijx2-tmp2*betajx)*rinv3
@@ -3045,7 +3051,7 @@
 
         image = .false.
         call starttime_Timer(t1)
-        call pt2ptFields(nptlc,targets,myoffset,npttot,sources,image,r0,&
+        call pt2ptFields(nptlc,targets,myoffset,npttot,sources,image,r0,r0,&
                           fx,fy,fz,gx,gy,gz)
         t_pt2ptfields = t_pt2ptfields + elapsedtime_Timer(t1)
         deallocate(sources,recvcounts,displs)

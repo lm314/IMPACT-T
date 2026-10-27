@@ -60,12 +60,12 @@ program bench_pt2ptfields
 
         !//one untimed call first, so a lazy first-touch GPU data allocation
         !//or JIT doesn't pollute the timed reps.
-        call pt2ptFields(NTOT,targets,0,NTOT,sources,.true.,R0,&
+        call pt2ptFields(NTOT,targets,0,NTOT,sources,.true.,R0,R0,&
                           ex,ey,ez,bx,by,bz)
 
         call starttime_Timer(t0)
         do irep = 1, NREP
-          call pt2ptFields(NTOT,targets,0,NTOT,sources,.true.,R0,&
+          call pt2ptFields(NTOT,targets,0,NTOT,sources,.true.,R0,R0,&
                             ex,ey,ez,bx,by,bz)
         enddo
         elapsed = elapsedtime_Timer(t0)

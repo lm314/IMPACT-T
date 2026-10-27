@@ -76,13 +76,13 @@ program bench_pt2ptfields_mgpu
         allocate(ex(nptlc),ey(nptlc),ez(nptlc),bx(nptlc),by(nptlc),bz(nptlc))
 
         !//one untimed warm-up call per rank.
-        call pt2ptFields(nptlc,targets,myoffset,NTOT,sources,.true.,R0,&
+        call pt2ptFields(nptlc,targets,myoffset,NTOT,sources,.true.,R0,R0,&
                           ex,ey,ez,bx,by,bz)
 
         call MPI_BARRIER(MPI_COMM_WORLD,ierr)
         call starttime_Timer(t0)
         do irep = 1, NREP
-          call pt2ptFields(nptlc,targets,myoffset,NTOT,sources,.true.,R0,&
+          call pt2ptFields(nptlc,targets,myoffset,NTOT,sources,.true.,R0,R0,&
                             ex,ey,ez,bx,by,bz)
         enddo
         elapsed = elapsedtime_Timer(t0)

@@ -662,7 +662,7 @@
         double precision, allocatable, dimension(:,:) :: brange
         double precision :: dGspread
         integer, dimension(Maxoverlap) :: tmpfile
-        double precision :: tmpcur,totchrg,r0,r0tmp
+        double precision :: tmpcur,totchrg,r0,r0img,tmpimg
         integer :: flagpt2pt,flagpos, flagcathode !//switch for point-to-point calculation and switch for space-charge with z>0
         integer :: flagimgnow !//whether the pt2pt image term is on this step (Flagimg, off past zimage)
         double precision :: zz,zorgin,zorgin2,vref,gamin,gam
@@ -719,7 +719,7 @@
         !//times, either direction) and applied with the same crossing test
         !//as tszstart.
         integer :: nsw,iswpt
-        double precision, dimension(101) :: swz,swr0
+        double precision, dimension(101) :: swz,swr0,swr0img
         integer, dimension(101) :: swflag
         real*8 :: bendlen,zz1,zz2,zwkmin,poscent,zfmin,zfmax,coeftol
         integer :: ldsg,nlsg,nrsg,npsg,msg,ncoefreal,iz
@@ -813,6 +813,7 @@
 !choice of the cut-off radius, r0, for each particle has to be very careful.
 !otherwise, it can end up with untrustable results.
         r0 = 0.0/Scxlt
+        r0img = r0
         !flagpt2pt = 1 !"0" not point-2-point, "1" use point-2-point
         flagpt2pt = 0 !"0" not point-2-point, "1" use point-2-point
 
@@ -921,6 +922,7 @@
         tzrot = 1.0e12
         swz = 1.0e12
         swr0 = 0.0d0
+        swr0img = 0.0d0
         swflag = 0
 
         izrot = 0
@@ -1144,6 +1146,7 @@
               nsw = 100
             endif
             call getparam_BeamLineElem(Blnelem(i),3,swr0(nsw))
+            call getparam_BeamLineElem(Blnelem(i),5,swr0img(nsw)) !image floor, 0: r0
             call getparam_BeamLineElem(Blnelem(i),4,swz(nsw))
             swflag(nsw) = 1 !1: switch to pt2pt (N-body)
           endif
@@ -1187,17 +1190,20 @@
         do iizz1 = 2, nsw
           tmpwk = swz(iizz1)
           tmpcur = swr0(iizz1)
+          tmpimg = swr0img(iizz1)
           itmp = swflag(iizz1)
           iizz = iizz1 - 1
           do while(iizz.ge.1)
             if(swz(iizz).le.tmpwk) exit
             swz(iizz+1) = swz(iizz)
             swr0(iizz+1) = swr0(iizz)
+            swr0img(iizz+1) = swr0img(iizz)
             swflag(iizz+1) = swflag(iizz)
             iizz = iizz - 1
           enddo
           swz(iizz+1) = tmpwk
           swr0(iizz+1) = tmpcur
+          swr0img(iizz+1) = tmpimg
           swflag(iizz+1) = itmp
         enddo
 
@@ -1460,11 +1466,15 @@
           if(distance.le.swz(iswpt+1) .and. (distance+dzz).ge.swz(iswpt+1)) then
             iswpt = iswpt + 1
             flagpt2pt = swflag(iswpt)
-            if(flagpt2pt.eq.1) r0 = swr0(iswpt)
+            if(flagpt2pt.eq.1) then
+              r0 = swr0(iswpt)
+              r0img = swr0img(iswpt)
+              if(r0img.le.0.0d0) r0img = r0 !V5 absent or 0: image floor = r0
+            endif
             if(myid.eq.0) then
               if(flagpt2pt.eq.1) then
                 print*,"space charge: switch to point-to-point (N-body) at z=",&
-                       distance," r0=",r0
+                       distance," r0=",r0," r0img=",r0img
               else
                 print*,"space charge: switch to the mesh solver at z=",distance
               endif
@@ -2374,7 +2384,7 @@
               call kickpt2ptImg_BeamBunch(Nplocal(ib),Ebunch(ib)%Pts1,t,&
                  Ebunch(ib)%Charge,&
                  Ebunch(ib)%Mass,dtless,Blnelem,zBlnelem,idrfile,Nblem,&
-                 ibinit,ibend,fldmp,totchrg,r0,Np(ib),Np(ib),flagimgnow)
+                 ibinit,ibend,fldmp,totchrg,r0,r0img,Np(ib),Np(ib),flagimgnow)
             enddo
 
             endif
@@ -2422,7 +2432,7 @@
                 totchrg = Ebunch(ib)%Current/Bfreq
                 flagimgnow = FlagImage
                 if(distance.gt.zimage) flagimgnow = 0
-                call kickpt2pt_gpu(ib,Ebunch(ib),t,dtless,totchrg,r0,Np(ib),&
+                call kickpt2pt_gpu(ib,Ebunch(ib),t,dtless,totchrg,r0,r0img,Np(ib),&
                        Np(ib),flagimgnow)
               enddo
             endif

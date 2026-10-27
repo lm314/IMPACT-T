@@ -8,7 +8,7 @@ cite (A1, B2.4, D1.12, ...) are in `doc/GPU_PORT_DESIGN.md`.
 
 | Test | Checks | Build | Ranks |
 |---|---|---|---|
-| `test_pt2ptfields.f90` | point-to-point fields (`pt2ptFields`) against an independent reference, image on and off, analytic self-image | CPU or GPU | 1 and 4 |
+| `test_pt2ptfields.f90` | point-to-point fields (`pt2ptFields`) against an independent reference, image on and off, analytic self-image, `r0img` cutoff | CPU or GPU | 1 and 4 |
 | `test_pt2pt_block.f90` | the blocked CPU pair loop of `pt2ptFields` against the unblocked loop, bit for bit, for block sizes 1 to larger than the source count, image on and off | CPU | 1 |
 | `test_bendnbody_cpu.f90` | the N-body kick in the bend frame (`kickpt2ptBd_BeamBunch`) against the analytic two-particle field | CPU | 1 |
 | `bench_pt2ptfields.f90` | pair evaluations per second of `pt2ptFields` (1M particles) | CPU or GPU | 1 |
@@ -72,6 +72,7 @@ mpirun -n 4 tests/test_pt2ptfields
 - **B**: image off (after `zimage`, or `Flagimg = 0`), against a direct-only reference: about 4e-13.
 - **C**: the image term changes the result (sanity).
 - **D**: a single particle at rest at height z against the analytic self-image field e/(4πε₀(2z)²): exact.
+- **E**: the image floor `r0img` (separate from `r0`): the self-image follows 1/(2z)² down to 2z = `r0img` and falls linearly (2z/`r0img`³) below it, peaking at 2z = `r0img`; `r0img = r0` caps the image at `r0`.
 
 Both rank counts give the same numbers. `IMPACTT_FIELD_DUMP=<file>` also
 writes check A's fields (one row per particle, in global order whatever the

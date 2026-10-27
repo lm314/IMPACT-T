@@ -1014,13 +1014,13 @@
         !> particle is a source and a target (bend frame, D1.12), else only
         !> z > 0.  With one rank the sources are used in place, otherwise
         !> gathered through the host.
-        subroutine pt2pt_fields_gpu(ib,bunch,allemitted,image,r0,npttot)
+        subroutine pt2pt_fields_gpu(ib,bunch,allemitted,image,r0,r0img,npttot)
         implicit none
         include 'mpif.h'
         integer, intent(in) :: ib,npttot
         logical, intent(in) :: allemitted,image
         type (BeamBunch), intent(inout) :: bunch
-        double precision, intent(in) :: r0
+        double precision, intent(in) :: r0,r0img
         integer :: n,nproc,myid,ierr,i,myoffset
         integer, allocatable :: recvcounts(:),displs(:)
         double precision, allocatable :: hsrc(:,:),hall(:,:)
@@ -1054,7 +1054,7 @@
 
         if(nproc.eq.1) then
           call starttime_Timer(t1)
-          call pt2ptFields_dev(n,targets_d,myoffset,npttot,srcloc_d,image,r0, &
+          call pt2ptFields_dev(n,targets_d,myoffset,npttot,srcloc_d,image,r0,r0img, &
                                fex,fey,fez,fbx,fby,fbz)
           t_pt2ptfields = t_pt2ptfields + elapsedtime_Timer(t1)
         else
@@ -1070,7 +1070,7 @@
           sources_d(:,1:npttot) = hall
           deallocate(hsrc,hall)
           call starttime_Timer(t1)
-          call pt2ptFields_dev(n,targets_d,myoffset,npttot,sources_d,image,r0, &
+          call pt2ptFields_dev(n,targets_d,myoffset,npttot,sources_d,image,r0,r0img, &
                                fex,fey,fez,fbx,fby,fbz)
           t_pt2ptfields = t_pt2ptfields + elapsedtime_Timer(t1)
         endif
@@ -1078,12 +1078,12 @@
         end subroutine pt2pt_fields_gpu
 
         !> kickpt2ptImg_BeamBunch: fields (pt2pt_fields_gpu) and the kick.
-        subroutine kickpt2pt_gpu(ib,bunch,tg,dt,totchrg,r0,npttot,nptrue, &
+        subroutine kickpt2pt_gpu(ib,bunch,tg,dt,totchrg,r0,r0img,npttot,nptrue, &
                                  flagimgnow)
         implicit none
         integer, intent(in) :: ib,npttot,nptrue,flagimgnow
         type (BeamBunch), intent(inout) :: bunch
-        double precision, intent(in) :: tg,dt,totchrg,r0
+        double precision, intent(in) :: tg,dt,totchrg,r0,r0img
         integer :: n,sgn
         double precision :: coefE,t0
 
@@ -1097,7 +1097,7 @@
         coefE = 1.0d0/(4*Pi*Epsilon0*Scxlt*Scxlt)*sgn*totchrg/nptrue
 
         call starttime_Timer(t0)
-        call pt2pt_fields_gpu(ib,bunch,.false.,flagimgnow.eq.1,r0,npttot)
+        call pt2pt_fields_gpu(ib,bunch,.false.,flagimgnow.eq.1,r0,r0img,npttot)
 
         if(n.gt.0) then
           call k_kick_pt2pt<<<(n+127)/128,128>>>(pb(ib)%p,n,fex,fey,fez,fbx,fby, &
@@ -1956,7 +1956,7 @@
         endif
         coefE = 1.0d0/(4*Pi*Epsilon0*Scxlt*Scxlt)*sgn*totchrg/nptrue
         call starttime_Timer(t0)
-        call pt2pt_fields_gpu(ib,bunch,.true.,.false.,r0,npttot)
+        call pt2pt_fields_gpu(ib,bunch,.true.,.false.,r0,r0,npttot)
         allocate(ezw_d(max(nzw,1)))
         ezw_d(1:nzw) = ezwake
         if(n.gt.0) then

@@ -94,7 +94,7 @@ Not tested on the GPU path: `Nbunch > 1` and the merge, restart (`-3`, `Rstartfl
 
 All are optional; existing inputs behave as before (with the one exception noted for bends).
 
-- **`-15` (point-to-point space charge on), V4 = the z at which it switches on** (default 0: from the start, as before). V3 is `r0` as before, in units of c·Dt (Dt of the header), not metres. Example: `0 0 0 -15 0.0 0.0 1.334e-4 0.0008 /`.
+- **`-15` (point-to-point space charge on), V4 = the z at which it switches on** (default 0: from the start, as before). V3 is `r0` as before, in units of c·Dt (Dt of the header), not metres. **V5 = `r0img`**, the same floor for the image pairs only (c·Dt units; 0 or absent: `r0img = r0`, so older inputs are unchanged). A particle's own image is a pair 2z apart, so a small `r0` (a few nm) loses the particles just emitted unless `r0img` is kept near 10 nm. Example: `0 0 0 -15 0.0 0.0 1.334e-4 0.0008 1.334e-4 /`.
 - **`-19` (back to the mesh solver), V3 = z.** Example: `0 0 0 -19 0.0 0.0 0.0020 0.0 /`. Up to 100 `-15`/`-19` switches, sorted by z, each acting on the step whose `[distance, distance+dzz]` contains it (the test the `-4` elements use).
 - **Point-to-point space charge in a bend.** A bend uses it when it is on at the bend entrance (a `-15` before the dipole, a `-19` after it). **This changes inputs whose `-15` window spans a bend**: before, the bend used the mesh solver; now it uses point-to-point. Image charge is off in the bend, every particle is a source and a target, and the space-charge magnetic field `bz` is kept.
 - **Binary `-2` dump: V4 > 0** (the 8th number on the line: `0.0 1 199 -2 2.0 2.0 2.0 1 /`). It writes `fort.<Bmpstp>` as a stream: an `int64` particle count, then count × 9 `float64` (the 9 columns of the text dump, same units and order). 72 bytes per particle; 6.24M particles take 0.6 s against 8.8 s for text.
@@ -283,7 +283,7 @@ From the measurements above (one H100 against one 2 × 64-core EPYC 9534 node):
 | `src/Func/PoissonGPU.f90` | new (B1): GPU Poisson solve with cuFFT, Green's-function kernels, `poisson_dev`, `gradEB_dev`, ρ sum over ranks |
 | `src/Appl/ParticleGPU.f90` | new (B2, C1, D1): device particle buffers and residency; drift, emission, range, loss, deposit, kick, N-body source and kick kernels; diagnostics sums; bend-frame kernels and loop helpers; CSR histogram; error flag; counters |
 | `src/Appl/FieldmapGPU.f90` | new (B2.6, D1.2): device copies of the field data slots, the per-step element table, `extfld_dev` with kinds 105, 112, 1, 111, 4 |
-| `src/Contrl/AccSimulator.f90` | GPU hooks and the GPU step and bend blocks (under `USE_GPU`); `-15` V4 and `-19` switches; N-body in bends; the fixes above |
+| `src/Contrl/AccSimulator.f90` | GPU hooks and the GPU step and bend blocks (under `USE_GPU`); `-15` V4, V5 and `-19` switches; N-body in bends; the fixes above |
 | `src/Appl/BeamBunch.f90` | `pt2ptFields` and `pt2ptFields_dev` (pair loop, CPU and GPU, kept identical), restructured `kickpt2ptImg_BeamBunch`, `kickref_Bd_BeamBunch`, `kickpt2ptBd_BeamBunch` (N-body in bends, CPU) |
 | `src/Appl/Field.f90` | the GPU Poisson call in `update3Otnew_FieldQuant`; zeroed gradient arrays |
 | `src/Appl/Distribution.f90` | read-in on rank 0 (`readslices_Dist`), binary `readbin_Dist` (168), ids |
