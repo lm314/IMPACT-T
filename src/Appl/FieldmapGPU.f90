@@ -26,7 +26,7 @@
         integer, parameter :: Maxact = 64
 
         ! slot data
-        real(8), device, allocatable, save :: fcoef_d(:,:,:)  !(4,10002,Maxoverlap)
+        real(8), device, allocatable, save :: fcoef_d(:,:,:)  !(4,Nfcoeftdata,Maxoverlap)
         real(8), device, allocatable, save :: ezp_d(:), erp_d(:), btp_d(:)
         integer, save :: stride = 0       ! packed elements per slot (kind 2)
         integer, device, save :: stride_d
@@ -75,7 +75,7 @@
         integer :: zero
         integer :: zi(4)
         if(.not.allocated(fcoef_d)) then
-          allocate(fcoef_d(4,10002,Maxoverlap))
+          allocate(fcoef_d(4,Nfcoeftdata,Maxoverlap))
           zero = 0
           cartout_d = zero
           cartfirst_d = zero

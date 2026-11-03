@@ -46,6 +46,12 @@
 ! using only on-axis field data and its derivities.
         !initial number of grid points on the axis.
         integer, parameter :: Ndataini = 5000
+        !rows of a discrete on-axis table (type 105 with file id > 1000, type 1
+        !profiles): header + E rows + header + B rows. 65540 holds a 65537-row
+        !E table (h = L/65536) with a one-row B table, which is within 1e-6 of a
+        !Fourier field with linear interpolation (it was 10002, i.e. 9999 E rows;
+        !each fielddata slot is now 2 MB).
+        integer, parameter :: Nfcoeftdata = 65540
         ! discrete Ez(0,z), Ez'(0,z), Ez''(0,z) rf data.
         double precision,dimension(Ndataini) :: zdat,edat,epdat,eppdat
 !----------------------------------------------------------------------
@@ -112,8 +118,8 @@
           ! practical number of grid data on the axis or Fourier coefficients.
           double precision,dimension(401) :: Fcoeft
           !store the discrete data of ez,ez',ez'',ez''' on axis. 
-          !here, maximum data point is 5000 for E field or B field.
-          double precision,dimension(4,10002) :: Fcoeftdata
+          !E and B tables, at most Nfcoeftdata rows in all (see above).
+          double precision,dimension(4,Nfcoeftdata) :: Fcoeftdata
           integer :: Ndatat
         end type fielddata
       contains
