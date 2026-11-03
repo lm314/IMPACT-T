@@ -2245,6 +2245,16 @@
         end subroutine diagnostic1avgZ_Output
 
         !> the 6D phase space output has (x(m), px/mc, y(m), py/mc, z(m), pz/mc).
+        !true when IMPACTT_NODUMP is set: the initial (fort.40) and final (fort.50) particle dumps are skipped,
+        !so a timing run does not write (and format) every particle twice.
+        logical function nodump_Output()
+        implicit none
+        character(len=8) :: val
+        integer :: ln, st
+        call get_environment_variable('IMPACTT_NODUMP',val,ln,st)
+        nodump_Output = (st .eq. 0 .and. ln .gt. 0)
+        end function nodump_Output
+
         subroutine phase_Output(nfile,this,samplePeriod,binary)
         implicit none
         include 'mpif.h'

@@ -1260,7 +1260,7 @@
         betazini = sqrt(1.0d0-1.0d0/(1.0d0+Bkenergy/Bmass)**2)
         !output initial phase space distribution 
         do ib = 1, Nbunch
-          call phase_Output(40+ib-1,Ebunch(ib),1)
+          if (.not.nodump_Output()) call phase_Output(40+ib-1,Ebunch(ib),1)
           qchg = Ebunch(ib)%Current/Scfreq
           call sliceprocdep_Output(Ebunch(ib)%Pts1,Nplocal(ib),Np(ib),&
                    Nz,qchg,Ebunch(ib)%Mass,60+ib-1)
@@ -3240,7 +3240,7 @@
         !output all particles in 6d phase space at given location blnLength.
         do ib = 1, Nbunch
           i = 50+ib-1 
-          call phase_Output(i,Ebunch(ib),1)
+          if (.not.nodump_Output()) call phase_Output(i,Ebunch(ib),1)
           qchg = Ebunch(ib)%Current/Scfreq
           call sliceprocdep_Output(Ebunch(ib)%Pts1,Nplocal(ib),Np(ib),&
                    Nz,qchg,Ebunch(ib)%Mass,70+ib-1)
