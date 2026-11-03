@@ -624,6 +624,8 @@
           ezp1 = ezp1 + (i-1)*2*pi/len*(-Fcoef(2*i-2)*sin((i-1)*2*pi*zz/len)+&
                 Fcoef(2*i-1)*cos((i-1)*2*pi*zz/len))
           ezpp1 = ezpp1+((i-1)*2*pi/len)**2*(-Fcoef(2*i-2)*cos((i-1)*2*pi*zz/len)&
+                  - Fcoef(2*i-1)*sin((i-1)*2*pi*zz/len))
+          ezppp = ezppp+((i-1)*2*pi/len)**3*(Fcoef(2*i-2)*sin((i-1)*2*pi*zz/len)&
                   - Fcoef(2*i-1)*cos((i-1)*2*pi*zz/len))
         enddo
         ez1=ez1*escale
@@ -716,6 +718,8 @@
                 fldata%Fcoeft(2*i-1)*cos((i-1)*2*pi*zz/len))
           ezpp1 = ezpp1+((i-1)*2*pi/len)**2*&
                   (-fldata%Fcoeft(2*i-2)*cos((i-1)*2*pi*zz/len)&
+                  - fldata%Fcoeft(2*i-1)*sin((i-1)*2*pi*zz/len))
+          ezppp = ezppp+((i-1)*2*pi/len)**3*(fldata%Fcoeft(2*i-2)*sin((i-1)*2*pi*zz/len)&
                   - fldata%Fcoeft(2*i-1)*cos((i-1)*2*pi*zz/len))
         enddo
         ez1=ez1*escale
