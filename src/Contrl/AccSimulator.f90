@@ -721,7 +721,7 @@
         integer :: nsw,iswpt
         double precision, dimension(101) :: swz,swr0,swr0img
         integer, dimension(101) :: swflag
-        real*8 :: bendlen,zz1,zz2,zwkmin,poscent,zfmin,zfmax,coeftol
+        real*8 :: bendlen,zz1,zz2,zwkmin,poscent,zfmin,zfmax,coeftol,zexitbd
         integer :: ldsg,nlsg,nrsg,npsg,msg,ncoefreal,iz
         !//for readin wake function
         integer :: ndatawk,ndatawkmax,itmp
@@ -3041,15 +3041,19 @@
               endif
             enddo
 
-            zorgin = zorgin2 
+            !the loop stops on the first step past the exit, so the reference has
+            !gone zz - (zorgin2 - zorgin) (0 to one step) beyond it: keep that,
+            !or the bunch arrives late downstream by up to Dt per bend
+            zexitbd = zorgin + zz
+            zorgin = zorgin2
             do ib =  1, Nbunch
               !call convExit_BeamBunch(Ebunch(ib))
 #ifdef USE_GPU
               if(gpubend) then
-                call convExit_gpu(ib,Ebunch(ib),zorgin2)
+                call convExit_gpu(ib,Ebunch(ib),zexitbd)
               else
 #endif
-              call convExit_BeamBunch(Ebunch(ib),zorgin2)
+              call convExit_BeamBunch(Ebunch(ib),zexitbd)
 #ifdef USE_GPU
               endif
 #endif
