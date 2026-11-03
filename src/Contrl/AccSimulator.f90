@@ -1624,7 +1624,11 @@
 !J.Q. 10/27/08
               if(ptrange(5).gt.0) then
                 brange(5,ib) = ptrange(5)
-              else if(brange(6,ib).gt.0) then
+              else if(brange(6,ib).gt.0 .and. flagcathode.eq.1) then
+                !only with a cathode (Nemission > 0): a read-in bunch with no
+                !emission that straddles z = 0 keeps its full range, otherwise
+                !its z < 0 part is outside the mesh (dropped on the CPU, a
+                !"dep - index out of range" stop on the GPU)
                 brange(5,ib) = 0.0
               else
                 brange(5,ib) = ptrange(5)
