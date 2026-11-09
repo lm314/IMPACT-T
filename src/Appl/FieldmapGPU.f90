@@ -2,7 +2,8 @@
 ! FieldmapGPUclass: external-field lookup on the GPU for beam line
 ! elements of type 105 (SolRF with a discrete on-axis file, Param(5)>1000),
 ! 112 (EMfldCyl), and (D1.2) type 1 (Quadrupole), 111 (EMfldCart) and
-! type 4 (Dipole, in ordinary steps).  See doc/GPU_PORT_DESIGN.md, B2.6
+! type 4 (Dipole, in ordinary steps), and (X2 (b)) type 101 (DTL, the
+! Fourier on-axis field of getfldt_DTL).  See doc/GPU_PORT_DESIGN.md, B2.6
 ! and D1.2.
 !
 ! The CPU dispatch (getfldt_BeamLineElem) is replaced by flat tables:
@@ -32,6 +33,7 @@
         integer, device, save :: stride_d
         integer, save :: slot_which(Maxoverlap) = 0
         integer, save :: slot_nz(Maxoverlap) = 0, slot_nr(Maxoverlap) = 0
+        integer, save :: slot_ndat(Maxoverlap) = 0
 
         ! dipole slots (D1.2): Fcoeft(1:22), then sin/cos of the entrance and
         ! exit face angles (computed on the host)
@@ -41,6 +43,8 @@
         complex(8), device, allocatable, save :: cex_d(:), cey_d(:), cez_d(:), &
                                                  cbx_d(:), cby_d(:), cbz_d(:)
         integer, save :: cart_off(Maxoverlap) = 0
+        ! type 101 slots (X2 (b)): Fcoeft(1:401) of read1t_Data
+        real(8), device, save :: fcoefF_d(401,Maxoverlap)
         ! points outside a 111 map: count, and the first one's particle index
         ! and position
         integer, device, save :: cartout_d
@@ -49,7 +53,7 @@
         real(8), device, save :: cartpos_d(3)
 
         ! per-step active-element table (device).
-        ! ti: 1 kind (1 105, 2 112, 3 quadrupole, 4 type 111, 5 dipole), 2 slot,
+        ! ti: 1 kind (1 105, 2 112, 3 quadrupole, 4 type 111, 5 dipole, 6 DTL), 2 slot,
         !   kind 2: 3 NzIntv, 4 NrIntv;  kind 3: 3 mode, 4 RF flag;
         !   kind 4: 3,4,5 Nx+1, Ny+1, Nz+1 and 6 offset in the packed arrays
         ! tr: 1 zlo, 2 zhi, 3 zedge, 4 escale, 5 len,
@@ -59,6 +63,9 @@
         !   kind 4: 3 Param(1), 4 length, 5,6 tmptime re/im, 7-9 Xmin Ymin Zmin,
         !           10-12 hx hy hz
         !   kind 5: 3 Param(3) (the field), 4 Param(5) (half gap)
+        !   kind 6: ti 3 Ndatat;  3 zedge, 4 escale, 5 len, 6 zmid, 7 tmpcos,
+        !           8 tmpsin, 9 xlrep, 10 clite, 11 pi, 12 len1, 13 bgrad1,
+        !           14 len2, 15 bgrad2
         integer, device, save :: ti_d(6,Maxact)
         real(8), device, save :: tr_d(16,Maxact)
         integer, save :: ntab_dev = 0
@@ -106,7 +113,8 @@
         !> which = 2: read2t_Data (112).  fldmp is the whole slot array,
         !> needed to re-pack the other 112 slots if the packed stride grows.
         !> which = 3: read1t_Data of a type-4 dipole (Fcoeft);
-        !> which = 4: read3t_Data (111), all 111 slots are re-packed.
+        !> which = 4: read3t_Data (111), all 111 slots are re-packed;
+        !> which = 5: read1t_Data of a type-101 DTL (Fcoeft, Ndatat).
         subroutine fldslot_upload(fldmp,s,which)
         implicit none
         type (fielddata), dimension(:), intent(in) :: fldmp
@@ -150,6 +158,10 @@
         else if(which.eq.4) then
           slot_which(s) = 4
           call pack_cart(fldmp)
+        else if(which.eq.5) then
+          fcoefF_d(:,s) = fldmp(s)%Fcoeft
+          slot_ndat(s) = fldmp(s)%Ndatat
+          slot_which(s) = 5
         endif
         end subroutine fldslot_upload
 
@@ -245,7 +257,7 @@
               return
             endif
           else if(itype.ne.112 .and. itype.ne.1 .and. itype.ne.111 .and. &
-                  itype.ne.4) then
+                  itype.ne.4 .and. itype.ne.101) then
             ok = .false.
             write(why,'(a,i5)') "unported beam line element type ",itype
             return
@@ -336,6 +348,39 @@
             call getparam_BeamLineElem(beamelem(ii),5,p5)
             htr(3,n) = p3
             htr(4,n) = p5
+          else if(itype.eq.101) then
+            ! getfldt_DTL (X2 (b)); the harmonic sum is on the device, the
+            ! per-step constants are built here with the CPU routine's own
+            ! expressions (single-precision clite and pi included)
+            hti(1,n) = 6
+            if(slot_which(slot).ne.5) then
+              ok = .false.
+              why = "type 101 element whose data are not on the device"
+              return
+            endif
+            hti(3,n) = slot_ndat(slot)
+            clite = 299792458.e0
+            pi = 2*asin(1.0)
+            ww = p3*2*pi
+            theta0 = p4*asin(1.0)/90
+            xlrep = ww/clite
+            htr(3,n) = p1
+            htr(4,n) = p2
+            htr(5,n) = blength
+            htr(6,n) = p1 + blength/2
+            htr(7,n) = cos(ww*tt+theta0)
+            htr(8,n) = sin(ww*tt+theta0)
+            htr(9,n) = xlrep
+            htr(10,n) = clite
+            htr(11,n) = pi
+            call getparam_BeamLineElem(beamelem(ii),7,p5)
+            htr(12,n) = p5
+            call getparam_BeamLineElem(beamelem(ii),8,p5)
+            htr(13,n) = p5
+            call getparam_BeamLineElem(beamelem(ii),9,p5)
+            htr(14,n) = blength - p5
+            call getparam_BeamLineElem(beamelem(ii),10,p5)
+            htr(15,n) = p5
           else if(itype.eq.105) then
             hti(1,n) = 1
             htr(3,n) = p1
@@ -401,6 +446,8 @@
               call fld_quad(x,y,zz,m,tf)
             else if(kd.eq.4) then
               call fld_emcart(x,y,zz,m,tf,ipart)
+            else if(kd.eq.6) then
+              call fld_dtl(x,y,zz,m,tf)
             else
               call fld_dipole(x,y,zz,ti_d(2,m),tr_d(3,m),tr_d(4,m),tf)
             endif
@@ -413,6 +460,92 @@
           endif
         enddo
         end subroutine extfld_dev
+
+        !> getfldt_DTL.  The harmonics cos(k*theta), sin(k*theta) come from
+        !> the previous harmonic (angle addition) instead of 8 sin/cos calls
+        !> per harmonic; the sums, prefactors and the off-axis expansion are
+        !> in the CPU routine's order.  Per-step constants are in the table.
+        attributes(device) subroutine fld_dtl(px,py,pz,m,extfld)
+        implicit none
+        real(8), value :: px,py,pz
+        integer, value :: m
+        real(8), intent(out) :: extfld(6)
+        real(8) :: zedge,escale,len,zmid,tmpcos,tmpsin,xlrep,clite,pi
+        real(8) :: bgrad,len1,bgrad1,len2,bgrad2,zz,theta,c1,s1,ck,sk,cn,sn
+        real(8) :: ez1,ezp1,ezpp1,ezppp,f1,f1p,r2,wk,a,b
+        real(8) :: tmpex,tmpey,tmpez,tmpbx,tmpby
+        integer :: i,slot,nd
+
+        slot = ti_d(2,m)
+        nd = ti_d(3,m)
+        zedge = tr_d(3,m)
+        escale = tr_d(4,m)
+        len = tr_d(5,m)
+        zmid = tr_d(6,m)
+        tmpcos = tr_d(7,m)
+        tmpsin = tr_d(8,m)
+        xlrep = tr_d(9,m)
+        clite = tr_d(10,m)
+        pi = tr_d(11,m)
+        len1 = tr_d(12,m)
+        bgrad1 = tr_d(13,m)
+        len2 = tr_d(14,m)
+        bgrad2 = tr_d(15,m)
+        zz = pz-zedge
+        if(zz.lt.len1) then
+          bgrad = bgrad1
+        else if(zz.lt.len2) then
+          bgrad = 0.0d0
+        else
+          bgrad = bgrad2
+        endif
+        extfld(1) = 0.0d0
+        extfld(2) = 0.0d0
+        extfld(3) = 0.0d0
+        extfld(4) = bgrad*py
+        extfld(5) = bgrad*px
+        extfld(6) = 0.0d0
+        zz = pz-zmid
+        ez1 = fcoefF_d(1,slot)/2
+        ezp1 = 0.0d0
+        ezpp1 = 0.0d0
+        ezppp = 0.0d0
+        theta = 2*pi*zz/len
+        c1 = cos(theta)
+        s1 = sin(theta)
+        ck = 1.0d0
+        sk = 0.0d0
+        do i = 2, (nd-1)/2 + 1
+          cn = ck*c1 - sk*s1
+          sn = sk*c1 + ck*s1
+          ck = cn
+          sk = sn
+          a = fcoefF_d(2*i-2,slot)
+          b = fcoefF_d(2*i-1,slot)
+          wk = (i-1)*2*pi/len
+          ez1 = ez1 + a*ck + b*sk
+          ezp1 = ezp1 + wk*(-a*sk + b*ck)
+          ezpp1 = ezpp1 + wk**2*(-a*ck - b*sk)
+          ezppp = ezppp + wk**3*(a*sk - b*ck)
+        enddo
+        ez1 = ez1*escale
+        ezp1 = ezp1*escale
+        ezpp1 = ezpp1*escale
+        ezppp = ezppp*escale
+        f1 = -(ezpp1+ez1*xlrep*xlrep)/4
+        f1p = -(ezppp+ezp1*xlrep*xlrep)/4
+        r2 = px**2+py**2
+        tmpex = -px*(ezp1/2+f1p*r2/4)*tmpcos
+        tmpey = -py*(ezp1/2+f1p*r2/4)*tmpcos
+        tmpez = (ez1+f1*r2)*tmpcos
+        tmpbx = py*xlrep/clite*(ez1/2+f1*r2/4)*tmpsin
+        tmpby = -px*xlrep/clite*(ez1/2+f1*r2/4)*tmpsin
+        extfld(1) = extfld(1) + tmpex
+        extfld(2) = extfld(2) + tmpey
+        extfld(3) = extfld(3) + tmpez
+        extfld(4) = extfld(4) + tmpbx
+        extfld(5) = extfld(5) + tmpby
+        end subroutine fld_dtl
 
         !> getfldt_SolRF, from the in-element test on.  Per-step constants
         !> (xlrep, tmpcos, tmpsin) come from the table.

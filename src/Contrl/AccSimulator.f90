@@ -1803,6 +1803,8 @@
 #ifdef USE_GPU
                 if(gpupart .and. idrfile(1,ii).eq.4) &
                   call fldslot_upload(fldmp,idrfile(3,ii),3)
+                if(gpupart .and. idrfile(1,ii).eq.101) &
+                  call fldslot_upload(fldmp,idrfile(3,ii),5)
 #endif
               else if(idrfile(1,ii).eq.111) then !3D Cartesian coordinate of field
                 call read3t_Data(fldmp(idrfile(3,ii)),idrfile(2,ii))

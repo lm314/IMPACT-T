@@ -17,6 +17,7 @@ cite (A1, B2.4, D1.12, ...) are in `doc/GPU_PORT_DESIGN.md`.
 | `test_poisson_gpu.f90` | the GPU Poisson solve `openBC3D_gpu` against `openBC3Dnew` (FFTW) and a direct sum; independence of the rank count | GPU | 1, several |
 | `test_particle_gpu.f90` | each GPU particle kernel (drifts, emission, deposit, gradients, kicks, external fields of types 105 and 112, losses) against the CPU routine it ports | GPU | 1 |
 | `test_bend_gpu.f90` | the field kinds of types 1, 4 and 111, the bend-frame kernels and diagnostics, and the N-body kick in the bend frame, against the CPU routines | GPU | 1 |
+| `test_dtl_gpu.f90` | the type-101 field (kind 6 of `FieldmapGPU.f90`) against `getfldt_DTL`, nine cells, 5 times, 1e5 points each | GPU | 1 |
 | `compare_runs.py` | runs one input with two executables and compares `fort.18/24/25/26` and the timers | any | any |
 | `compare_dirs.py` | compares `fort.18/24/25/26` of finished run directories | any | any |
 | `make_test_inputs.py` | writes synthetic input files for `test_bend_gpu` and `test_particle_gpu` | — | — |

@@ -81,7 +81,7 @@ The timer table at the end has new entries: `pt2ptfields`, `poisgpu`, `drftgpu`,
 |---|---|---|
 | Emission from the cathode, drifts, range and centroid, lost-particle test | yes | |
 | Deposition, Poisson solve (open boundaries, image charge), field gradients | yes (`Flagbc = 1`) | other `Flagbc`: CPU fallback |
-| External fields: type 105 (discrete on-axis data, file ID > 1000), 112, 1 (quadrupole, all modes), 111, 4 (dipole outside the bend loop) | yes | other types, and 105 with Fourier coefficients: CPU fallback for the steps where the element is in range |
+| External fields: type 105 (discrete on-axis data, file ID > 1000), 112, 1 (quadrupole, all modes), 111, 4 (dipole outside the bend loop), 101 (DTL, Fourier on-axis field; the harmonics by recurrence) | yes | other types (102, 103, 104), and 105 with Fourier coefficients: CPU fallback for the steps where the element is in range |
 | Point-to-point space charge (`-15`/`-19`), with image charge, on one or several GPUs | yes | |
 | Diagnostics `Flagdiag = 2` | yes | 1, 3, 105: on the host after a copy |
 | Type-4 bend loop: mesh or no space charge, CSR, N-body | yes (one bunch, `Flagbc = 1`) | `Nbunch > 1` or `Flagbc ≠ 1`: the host bend loop |
@@ -171,6 +171,7 @@ Each test in `tests/` compares GPU kernels with the CPU routines they port, on t
 | `test_pt2ptfields` | `pt2ptFields` (GPU and CPU) against an independent pair sum; analytic self-image | 5.9e-12 (image on), 7.4e-13 (off), exact; GPU and CPU fields bit-identical; 1, 2, 4, 8 GPUs bit-identical |
 | `test_pt2pt_block` | the blocked CPU pair loop against the unblocked loop, block sizes 1 to more than the source count, image on and off | bit-identical |
 | `test_poisson_gpu` | `openBC3D_gpu` against `openBC3Dnew` (FFTW), and a direct sum | φ ≤ 5e-13 up to 128×128×256; image potential as close to the direct sum as the CPU's (the 8-corner difference of the integrated Green's function limits both); rank counts bit-identical |
+| `test_dtl_gpu` | the type-101 field (kind 6) against `getfldt_DTL` on nine cells, 5 times across an RF period | ≤ 1.3e-15 of each component's maximum |
 | `test_particle_gpu` | drifts, emission, range, losses, deposit, gradients, the three kicks, external fields of 105 and 112 | kicks ≤ 7.3e-15 of the largest kick (point-to-point 2.9e-13); range, losses and gradients exact; deposit 6e-15 of max ρ |
 | `test_bend_gpu` | quadrupole, dipole and type-111 fields; bend-frame rotations, conversions, drifts; bend kicks; bend diagnostics; N-body kick in the bend frame | ≤ 2e-16 (quadrupole), ≤ 9e-16 (dipole), exact (111); final momenta ≤ 3.1e-16 of \|p\| |
 | `test_bendnbody_cpu` | the CPU N-body kick in the bend frame against the analytic two-particle field | 1.7e-11 |
@@ -282,7 +283,7 @@ From the measurements above (one H100 against one 2 × 64-core EPYC 9534 node):
 |---|---|
 | `src/Func/PoissonGPU.f90` | new (B1): GPU Poisson solve with cuFFT, Green's-function kernels, `poisson_dev`, `gradEB_dev`, ρ sum over ranks |
 | `src/Appl/ParticleGPU.f90` | new (B2, C1, D1): device particle buffers and residency; drift, emission, range, loss, deposit, kick, N-body source and kick kernels; diagnostics sums; bend-frame kernels and loop helpers; CSR histogram; error flag; counters |
-| `src/Appl/FieldmapGPU.f90` | new (B2.6, D1.2): device copies of the field data slots, the per-step element table, `extfld_dev` with kinds 105, 112, 1, 111, 4 |
+| `src/Appl/FieldmapGPU.f90` | new (B2.6, D1.2): device copies of the field data slots, the per-step element table, `extfld_dev` with kinds 105, 112, 1, 111, 4, 101 |
 | `src/Contrl/AccSimulator.f90` | GPU hooks and the GPU step and bend blocks (under `USE_GPU`); `-15` V4, V5 and `-19` switches; N-body in bends; the fixes above |
 | `src/Appl/BeamBunch.f90` | `pt2ptFields` and `pt2ptFields_dev` (pair loop, CPU and GPU, kept identical), restructured `kickpt2ptImg_BeamBunch`, `kickref_Bd_BeamBunch`, `kickpt2ptBd_BeamBunch` (N-body in bends, CPU) |
 | `src/Appl/Field.f90` | the GPU Poisson call in `update3Otnew_FieldQuant`; zeroed gradient arrays |
