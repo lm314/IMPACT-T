@@ -38,6 +38,7 @@
         public :: rottoT_gpu, rotbackT_gpu, convEntr_gpu, convExit_gpu
         public :: driftbackhalf_gpu, drifthalfBd_gpu, kick_bend_gpu
         public :: diagB_pass1_gpu, diagB_pass2_gpu
+        public :: loss_on_device
 
         type ptsbuf
           real(8), device, allocatable :: p(:,:)  ! (9,cap), same layout as Pts1
@@ -51,6 +52,17 @@
         integer, save :: nsync_up = 0, nsync_down = 0, nfallback = 0
         integer, save :: nbend_gpu = 0, nbend_host = 0
         integer, save :: envflag = -1
+
+        ! lost particles removed on the device (lost_gpu, compact_lost):
+        ! keep flags, per-block counts and offsets, and a second particle
+        ! buffer that the survivors are scattered into (lblk particles a block)
+        integer, parameter :: lblk = 256
+        real(8), device, allocatable, save :: pcomp_d(:,:)
+        integer, device, allocatable, save :: keep_d(:), bcnt_d(:), boff_d(:)
+        integer, device, save :: nkeep_d, bfirst_d
+        integer, save :: lossenv = -1           ! 1 on the device, 0 host (IMPACTT_LOSS=host)
+        integer, save :: nloss_dev = 0, nloss_host = 0, nloss_odd = 0
+        integer(8), save :: nlost_dev = 0, nlost_host = 0
 
         ! mesh arrays (global grid, B2.4)
         integer, save :: mnx = 0, mny = 0, mnz = 0
@@ -250,6 +262,14 @@
                 ", 111 out-of-map points ",ncart
           if(ncart.gt.0) write(*,'(a,i0,a,3es14.6)') &
             "   first 111 out-of-map point: particle ",icart," at ",pcart
+          ! rank 0's counts; loss steps on the host are IMPACTT_LOSS=host
+          write(*,'(a,i0,a,i0,a,i0,a,i0,a)') &
+                " GPU particle path: loss steps on the device ",nloss_dev, &
+                " (",nlost_dev," particles), on the host ",nloss_host, &
+                " (",nlost_host," particles)"
+          if(nloss_odd.gt.0) write(*,'(a,i0,a)') &
+            "   loss count of count_lost and of the compaction differed in ", &
+            nloss_odd," steps (a particle on a boundary to rounding)"
         endif
         end subroutine report_gpu_stats
 
@@ -469,10 +489,32 @@
         nlost = cnt
         end subroutine count_lost
 
-        !> lostREC_BeamBunch (idm = 0) or lostDFO_BeamBunch (idm = 1) with
-        !> the predicate evaluated on the GPU.  Each rank makes exactly one
-        !> MPI_ALLREDUCE (inside the CPU routine if it lost particles, here
-        !> otherwise) and updates Current as the CPU routine does.
+        !> True unless IMPACTT_LOSS=host (then lost particles are removed by
+        !> the host routines, with a download and an upload of the beam).
+        function loss_on_device() result(flag)
+        implicit none
+        logical :: flag
+        character(len=32) :: val
+        integer :: stat
+        if(lossenv.lt.0) then
+          lossenv = 1
+          call get_environment_variable("IMPACTT_LOSS",val,status=stat)
+          if(stat.eq.0) then
+            if(trim(val).eq."host") lossenv = 0
+          endif
+        endif
+        flag = (lossenv.eq.1)
+        end function loss_on_device
+
+        !> lostREC_BeamBunch (idm = 0) or lostDFO_BeamBunch (idm = 1) on the
+        !> device particles.  count_lost tests the predicate on the GPU; if a
+        !> particle is lost, compact_lost removes it on the device (stable: the
+        !> survivors keep their order, as in the host routines, so the result
+        !> is the same array), and the particles stay on the device.  With
+        !> IMPACTT_LOSS=host the host routine does it instead (download,
+        !> compaction, upload at the next step).  Each rank makes exactly one
+        !> MPI_ALLREDUCE whichever branch it takes, and updates Current and
+        !> Npt as the host routines do.  The removal is timed in lostgpu.
         subroutine lost_gpu(ib,bunch,idm,xrad,yrad,zleng,zcent,nplc,nptot)
         implicit none
         include 'mpif.h'
@@ -481,7 +523,7 @@
         double precision, intent(in) :: xrad,yrad,zleng,zcent
         integer, intent(out) :: nplc,nptot
         double precision :: p1,p2,p3,p4,p5,p6,rrap,t0
-        integer :: nlost,ierr
+        integer :: nlost,ierr,n0
         call ensure_device(ib,bunch)
         call starttime_Timer(t0)
         p1 = -xrad/Scxlt
@@ -496,21 +538,240 @@
           call count_lost(pb(ib)%p,pb(ib)%n,idm,p1,p2,p3,p4,p5,p6,rrap,nlost)
         endif
         t_drftgpu = t_drftgpu + elapsedtime_Timer(t0)
-        if(nlost.gt.0) then
+        if(nlost.gt.0 .and. .not.loss_on_device()) then
           call ensure_host(ib,bunch)
+          call starttime_Timer(t0)
+          n0 = bunch%Nptlocal
           if(idm.eq.0) then
             call lostREC_BeamBunch(bunch,xrad,yrad,zleng,zcent,nplc,nptot)
           else
             call lostDFO_BeamBunch(bunch,xrad,yrad,zleng,zcent,nplc,nptot)
           endif
           pb(ib)%state = 2
+          nloss_host = nloss_host + 1
+          nlost_host = nlost_host + (n0 - bunch%Nptlocal)
+          t_lostgpu = t_lostgpu + elapsedtime_Timer(t0)
         else
+          if(nlost.gt.0) then
+            call starttime_Timer(t0)
+            n0 = pb(ib)%n
+            call compact_lost(ib,idm,p1,p2,p3,p4,p5,p6,rrap)
+            bunch%Nptlocal = pb(ib)%n
+            nloss_dev = nloss_dev + 1
+            nlost_dev = nlost_dev + (n0 - pb(ib)%n)
+            if(n0 - pb(ib)%n .ne. nlost) nloss_odd = nloss_odd + 1
+            t_lostgpu = t_lostgpu + elapsedtime_Timer(t0)
+          endif
           nplc = bunch%Nptlocal
           call MPI_ALLREDUCE(nplc,nptot,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
           bunch%Current = bunch%Current*nptot/bunch%Npt
           bunch%Npt = nptot
         endif
         end subroutine lost_gpu
+
+        !> Remove the lost particles of bunch ib on the device, keeping the
+        !> order of the survivors (the host routines' stable compaction):
+        !>  1. k_lost_flag: the predicate once per particle into keep_d (1 =
+        !>     kept), and the survivors of each block of lblk particles;
+        !>  2. k_lost_scan (one block): exclusive prefix sum of the block
+        !>     counts, the survivor total nkeep_d, and bfirst_d, the first
+        !>     block that lost a particle (blocks before it do not move);
+        !>  3. k_lost_scatter: each survivor of blocks >= bfirst_d to its new
+        !>     column of pcomp_d (block offset + rank inside the block);
+        !>  4. the moved columns back into pb(ib)%p, and the vacated tail
+        !>     columns 1-6 set as the host routines set them (0,0,0,0,-1e5,0).
+        !> The survivor count is that of the flags (not of count_lost), so the
+        !> buffer and the count agree by construction.  No host copy of the
+        !> particles; two integers come back (nkeep_d, bfirst_d).
+        subroutine compact_lost(ib,idm,p1,p2,p3,p4,p5,p6,rrap)
+        implicit none
+        integer, intent(in) :: ib,idm
+        double precision, intent(in) :: p1,p2,p3,p4,p5,p6,rrap
+        integer :: n,nb,nnew,bf,c0,ncol
+        n = pb(ib)%n
+        if(n.le.0) return
+        nb = (n+lblk-1)/lblk
+        if(.not.allocated(pcomp_d)) then
+          allocate(pcomp_d(9,pb(ib)%cap),keep_d(pb(ib)%cap))
+        else if(size(pcomp_d,2).lt.n) then
+          deallocate(pcomp_d,keep_d)
+          allocate(pcomp_d(9,pb(ib)%cap),keep_d(pb(ib)%cap))
+        endif
+        if(.not.allocated(bcnt_d)) then
+          allocate(bcnt_d(nb),boff_d(nb))
+        else if(size(bcnt_d).lt.nb) then
+          deallocate(bcnt_d,boff_d)
+          allocate(bcnt_d(nb),boff_d(nb))
+        endif
+        call k_lost_flag<<<nb,lblk>>>(pb(ib)%p,n,idm,p1,p2,p3,p4,p5,p6,rrap, &
+                                       keep_d,bcnt_d)
+        call k_lost_scan<<<1,1024>>>(bcnt_d,boff_d,nb,n,nkeep_d,bfirst_d)
+        nnew = nkeep_d
+        bf = bfirst_d
+        if(bf.le.nb) then
+          call k_lost_scatter<<<nb-bf+1,lblk>>>(pb(ib)%p,pcomp_d,n,bf-1, &
+                                                keep_d,boff_d)
+          c0 = (bf-1)*lblk + 1
+          if(nnew.ge.c0) then
+            ncol = nnew - c0 + 1
+            call k_copy_cols<<<int((9_8*ncol+255_8)/256_8),256>>>(pb(ib)%p, &
+                                                                   pcomp_d,c0,ncol)
+          endif
+          if(n.gt.nnew) then
+            call k_lost_tail<<<(n-nnew+255)/256,256>>>(pb(ib)%p,nnew,n)
+          endif
+        endif
+        call check_gpu_error()
+        pb(ib)%n = nnew
+        pb(ib)%state = 1
+        call sync_gpu()
+        end subroutine compact_lost
+
+        !> the predicate of lostREC_BeamBunch (idm = 0) / lostDFO_BeamBunch
+        !> (idm = 1), as count_lost; keep(i) = 1 for a survivor, and the
+        !> survivors of each block in bcnt.
+        attributes(global) subroutine k_lost_flag(p,n,idm,p1,p2,p3,p4,p5,p6, &
+                                                  rrap,keep,bcnt)
+        implicit none
+        integer, value :: n,idm
+        real(8), value :: p1,p2,p3,p4,p5,p6,rrap
+        real(8), device :: p(9,n)
+        integer, device :: keep(n),bcnt(*)
+        integer, shared :: scnt
+        integer :: i,k,old
+        real(8) :: rr
+        logical :: lost
+        i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+        if(threadIdx%x.eq.1) scnt = 0
+        call syncthreads()
+        if(i.le.n) then
+          if(idm.eq.0) then
+            lost = p(1,i).le.p1 .or. p(1,i).ge.p2 .or. p(3,i).le.p3 .or. &
+                   p(3,i).ge.p4
+          else
+            rr = p(1,i)**2+p(3,i)**2
+            lost = rr.ge.rrap
+          endif
+          if(.not.lost) then
+            lost = (p(5,i).le.p5 .and. p(6,i).lt.0.0) .or. p(5,i).ge.p6
+          endif
+          k = 1
+          if(lost) k = 0
+          keep(i) = k
+          if(k.eq.1) old = atomicAdd(scnt,1)
+        endif
+        call syncthreads()
+        if(threadIdx%x.eq.1) bcnt(blockIdx%x) = scnt
+        end subroutine k_lost_flag
+
+        !> one block: boff = exclusive prefix sum of bcnt(1:nb), nkeep = the
+        !> total, bfirst = the first block with fewer survivors than particles
+        !> (nb + 1 if none).  Each thread scans a contiguous chunk.
+        attributes(global) subroutine k_lost_scan(bcnt,boff,nb,n,nkeep,bfirst)
+        implicit none
+        integer, value :: nb,n
+        integer, device :: bcnt(nb),boff(nb)
+        integer, device :: nkeep,bfirst
+        integer, shared :: s(1024),f(1024)
+        integer :: t,nt,chunk,j0,j1,j,acc,v,ff,full
+        nt = blockDim%x
+        t = threadIdx%x
+        chunk = (nb+nt-1)/nt
+        j0 = (t-1)*chunk + 1
+        j1 = min(nb,t*chunk)
+        acc = 0
+        ff = nb + 1
+        do j = j0, j1
+          acc = acc + bcnt(j)
+          full = min(lblk,n-(j-1)*lblk)
+          if(ff.gt.nb .and. bcnt(j).ne.full) ff = j
+        enddo
+        s(t) = acc
+        f(t) = ff
+        call syncthreads()
+        if(t.eq.1) then
+          acc = 0
+          ff = nb + 1
+          do j = 1, nt
+            v = s(j)
+            s(j) = acc
+            acc = acc + v
+            ff = min(ff,f(j))
+          enddo
+          nkeep = acc
+          bfirst = ff
+        endif
+        call syncthreads()
+        acc = s(t)
+        do j = j0, j1
+          boff(j) = acc
+          acc = acc + bcnt(j)
+        enddo
+        end subroutine k_lost_scan
+
+        !> survivors of block bskip + blockIdx%x to q(:, boff + rank in the
+        !> block), rank by an inclusive scan of the keep flags in shared memory
+        attributes(global) subroutine k_lost_scatter(p,q,n,bskip,keep,boff)
+        implicit none
+        integer, value :: n,bskip
+        real(8), device :: p(9,n),q(9,*)
+        integer, device :: keep(n),boff(*)
+        integer, shared :: s(lblk)
+        integer :: i,t,b,d,v,k,j,c
+        t = threadIdx%x
+        b = blockIdx%x + bskip
+        i = (b-1)*lblk + t
+        k = 0
+        if(i.le.n) k = keep(i)
+        s(t) = k
+        call syncthreads()
+        d = 1
+        do while(d.lt.lblk)
+          v = 0
+          if(t.gt.d) v = s(t-d)
+          call syncthreads()
+          s(t) = s(t) + v
+          call syncthreads()
+          d = 2*d
+        enddo
+        if(k.eq.1) then
+          j = boff(b) + s(t)
+          do c = 1, 9
+            q(c,j) = p(c,i)
+          enddo
+        endif
+        end subroutine k_lost_scatter
+
+        !> p(:, c0 : c0+ncol-1) = q(:, c0 : c0+ncol-1), one element a thread
+        attributes(global) subroutine k_copy_cols(p,q,c0,ncol)
+        implicit none
+        integer, value :: c0,ncol
+        real(8), device :: p(9,*),q(9,*)
+        integer(8) :: k
+        integer :: c,j
+        k = int(blockIdx%x-1,8)*blockDim%x + threadIdx%x
+        if(k.gt.9_8*ncol) return
+        c = int(mod(k-1_8,9_8)) + 1
+        j = c0 + int((k-1_8)/9_8)
+        p(c,j) = q(c,j)
+        end subroutine k_copy_cols
+
+        !> the columns vacated by the compaction, as lostREC_BeamBunch leaves
+        !> them (rows 1-6; rows 7-9 are not set by the host routine either)
+        attributes(global) subroutine k_lost_tail(p,nnew,n)
+        implicit none
+        integer, value :: nnew,n
+        real(8), device :: p(9,n)
+        integer :: j
+        j = nnew + (blockIdx%x-1)*blockDim%x + threadIdx%x
+        if(j.gt.n) return
+        p(1,j) = 0.0
+        p(2,j) = 0.0
+        p(3,j) = 0.0
+        p(4,j) = 0.0
+        p(5,j) = -1.0e5
+        p(6,j) = 0.0
+        end subroutine k_lost_tail
 
         !-------------------------------------------------------------
         ! mesh arrays
