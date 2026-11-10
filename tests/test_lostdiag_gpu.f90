@@ -18,7 +18,10 @@
 !      host loop of diagnostic1avg_Output transcribed here: each of the 35
 !      sums within 1e-12 of the sum of the absolute values of its terms
 !      (rounding of a sum in another order), the 6 maxima and max r^2
-!      bit-identical, the 6 first-pass sums within 1e-12 of the sum of |terms|.
+!      bit-identical; the 6 first-pass sums (1e6 particles, all-positive
+!      columns, where the host's sequential sum is itself off by up to a few
+!      1e-12) within 1e-12 of the sum of |terms| from a compensated (Neumaier)
+!      sum, with the host loop's own error printed beside it.
 !   C. the real diagnostic1avg_Output, devok true against host, two bunches,
 !      at three times (before the losses, after lost_gpu, after a second
 !      loss with idm 1): every number of fort.18 and fort.24-32 as written
@@ -325,6 +328,7 @@ contains
   subroutine test_sums()
     type (BeamBunch) :: bc, bg(1)
     double precision :: m0(6),s0(6),g0(6),a0(6),tl(35),gl(35),al(35),lm(6),gm(6),lr,gr,dmax,d
+    double precision, volatile :: e0(6),c0(6),tt   ! volatile: -fast must not reassociate the compensation
     integer :: k,kw,n
     n = 1000000
     call fill_beam(bc,n,0.01d0,2.0d0,0.6d0,0.2d0,0.4d0,0.0d0)
@@ -339,11 +343,25 @@ contains
     m0 = 0.0d0
     call host_sums(bc,m0,s0,tl,al,lm,lr)
     a0 = 0.0d0
+    e0 = 0.0d0
+    c0 = 0.0d0
     do k = 1, n
       a0 = a0 + abs(bc%Pts1(1:6,k))
+      do kw = 1, 6                    ! Neumaier compensated sum: the reference
+        tt = e0(kw) + bc%Pts1(kw,k)
+        if(abs(e0(kw)).ge.abs(bc%Pts1(kw,k))) then
+          c0(kw) = c0(kw) + ((e0(kw) - tt) + bc%Pts1(kw,k))
+        else
+          c0(kw) = c0(kw) + ((bc%Pts1(kw,k) - tt) + e0(kw))
+        endif
+        e0(kw) = tt
+      enddo
     enddo
-    dmax = maxval(abs(g0-s0)/max(a0,1.0d-300))
-    write(*,'(a,es10.3)') "B pass 1, 6 sums, max |gpu-cpu|/sum|terms| ",dmax
+    e0 = e0 + c0
+    write(*,'(a,es10.3,a,es10.3)') "B pass 1, 6 sums, host loop |cpu-exact|/sum|terms| ", &
+      maxval(abs(s0-e0)/max(a0,1.0d-300)),"  |gpu-cpu|/sum|terms| ",maxval(abs(g0-s0)/max(a0,1.0d-300))
+    dmax = maxval(abs(g0-e0)/max(a0,1.0d-300))
+    write(*,'(a,es10.3)') "B pass 1, 6 sums, max |gpu-exact|/sum|terms| ",dmax
     if(dmax.gt.1.0d-12) then
       print*,"   FAIL"
       nfail = nfail + 1
