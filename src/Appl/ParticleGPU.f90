@@ -55,13 +55,14 @@
 
         ! lost particles removed on the device (lost_gpu, compact_lost):
         ! keep flags, per-block counts and offsets, and a second particle
-        ! buffer that the survivors are scattered into (lblk particles a block)
+        ! buffer that the survivors are scattered into (lblk particles a block);
+        ! compact_lost usually swaps it with the bunch's buffer afterwards
         integer, parameter :: lblk = 256
         real(8), device, allocatable, save :: pcomp_d(:,:)
         integer, device, allocatable, save :: keep_d(:), bcnt_d(:), boff_d(:)
         integer, device, save :: nkeep_d, bfirst_d
         integer, save :: lossenv = -1           ! 1 on the device, 0 host (IMPACTT_LOSS=host)
-        integer, save :: nloss_dev = 0, nloss_host = 0, nloss_odd = 0
+        integer, save :: nloss_dev = 0, nloss_host = 0, nloss_odd = 0, nswap = 0
         integer(8), save :: nlost_dev = 0, nlost_host = 0
         ! Flagdiag = 1 moments on the device (diag1_pass1_gpu, diag1_pass2_gpu)
         integer, save :: diagenv = -1           ! 1 on the device, 0 host (IMPACTT_DIAG=host)
@@ -271,6 +272,9 @@
                 " (",nlost_dev," particles), on the host ",nloss_host, &
                 " (",nlost_host," particles); Flagdiag = 1 moments on the device ", &
                 ndiag1_dev," times"
+          if(nloss_dev.gt.0) write(*,'(a,i0,a,i0,a)') &
+            "   device loss steps with a buffer swap ",nswap," of ",nloss_dev, &
+            " (the others copied the moved columns back)"
           if(nloss_odd.gt.0) write(*,'(a,i0,a)') &
             "   loss count of count_lost and of the compaction differed in ", &
             nloss_odd," steps (a particle on a boundary to rounding)"
@@ -495,6 +499,9 @@
 
         !> True unless IMPACTT_LOSS=host (then lost particles are removed by
         !> the host routines, with a download and an upload of the beam).
+        !> IMPACTT_LOSS=copyback keeps the removal on the device but always
+        !> copies the moved columns back instead of swapping the buffers
+        !> (compact_lost; for checks, the result is the same).
         function loss_on_device() result(flag)
         implicit none
         logical :: flag
@@ -505,9 +512,10 @@
           call get_environment_variable("IMPACTT_LOSS",val,status=stat)
           if(stat.eq.0) then
             if(trim(val).eq."host") lossenv = 0
+            if(trim(val).eq."copyback") lossenv = 2
           endif
         endif
-        flag = (lossenv.eq.1)
+        flag = (lossenv.ge.1)
         end function loss_on_device
 
         !> lostREC_BeamBunch (idm = 0) or lostDFO_BeamBunch (idm = 1) on the
@@ -582,25 +590,35 @@
         !>     block that lost a particle (blocks before it do not move);
         !>  3. k_lost_scatter: each survivor of blocks >= bfirst_d to its new
         !>     column of pcomp_d (block offset + rank inside the block);
-        !>  4. the moved columns back into pb(ib)%p, and the vacated tail
-        !>     columns 1-6 set as the host routines set them (0,0,0,0,-1e5,0).
+        !>  4. whichever is shorter: the unmoved columns before block bfirst_d
+        !>     into pcomp_d and the two buffers swapped (move_alloc, no copy),
+        !>     or the moved columns back into pb(ib)%p (IMPACTT_LOSS=copyback
+        !>     always does this); then the vacated tail columns 1-6 set as the
+        !>     host routines set them (0,0,0,0,-1e5,0).  Losses at random
+        !>     places start in the first blocks, so the swap usually copies
+        !>     almost nothing, where the copy back moved the whole beam.
         !> The survivor count is that of the flags (not of count_lost), so the
         !> buffer and the count agree by construction.  No host copy of the
-        !> particles; two integers come back (nkeep_d, bfirst_d).
+        !> particles; two integers come back (nkeep_d, bfirst_d).  After a
+        !> swap pcomp_d is the bunch's old buffer, so its size can differ from
+        !> keep_d's and from other bunches' capacities: each is checked alone.
         subroutine compact_lost(ib,idm,p1,p2,p3,p4,p5,p6,rrap)
         implicit none
         integer, intent(in) :: ib,idm
         double precision, intent(in) :: p1,p2,p3,p4,p5,p6,rrap
         integer :: n,nb,nnew,bf,c0,ncol
+        real(8), device, allocatable :: tmp_d(:,:)
         n = pb(ib)%n
         if(n.le.0) return
         nb = (n+lblk-1)/lblk
-        if(.not.allocated(pcomp_d)) then
-          allocate(pcomp_d(9,pb(ib)%cap),keep_d(pb(ib)%cap))
-        else if(size(pcomp_d,2).lt.n) then
-          deallocate(pcomp_d,keep_d)
-          allocate(pcomp_d(9,pb(ib)%cap),keep_d(pb(ib)%cap))
+        if(allocated(pcomp_d)) then
+          if(size(pcomp_d,2).lt.n) deallocate(pcomp_d)
         endif
+        if(.not.allocated(pcomp_d)) allocate(pcomp_d(9,max(pb(ib)%cap,n)))
+        if(allocated(keep_d)) then
+          if(size(keep_d).lt.n) deallocate(keep_d)
+        endif
+        if(.not.allocated(keep_d)) allocate(keep_d(max(pb(ib)%cap,n)))
         if(.not.allocated(bcnt_d)) then
           allocate(bcnt_d(nb),boff_d(nb))
         else if(size(bcnt_d).lt.nb) then
@@ -616,7 +634,19 @@
           call k_lost_scatter<<<nb-bf+1,lblk>>>(pb(ib)%p,pcomp_d,n,bf-1, &
                                                 keep_d,boff_d)
           c0 = (bf-1)*lblk + 1
-          if(nnew.ge.c0) then
+          if(lossenv.ne.2 .and. c0-1 .lt. nnew-c0+1) then
+            ! columns 1 .. c0-1 did not move: copy them, then swap
+            nswap = nswap + 1
+            if(c0.gt.1) then
+              ncol = c0 - 1
+              call k_copy_cols<<<int((9_8*ncol+255_8)/256_8),256>>>(pcomp_d, &
+                                                                pb(ib)%p,1,ncol)
+            endif
+            call move_alloc(pb(ib)%p,tmp_d)
+            call move_alloc(pcomp_d,pb(ib)%p)
+            call move_alloc(tmp_d,pcomp_d)
+            pb(ib)%cap = size(pb(ib)%p,2)
+          else if(nnew.ge.c0) then
             ncol = nnew - c0 + 1
             call k_copy_cols<<<int((9_8*ncol+255_8)/256_8),256>>>(pb(ib)%p, &
                                                                    pcomp_d,c0,ncol)

@@ -10,8 +10,9 @@
 !      pz < 0) and the particles that must stay (z <= 0 with pz >= 0); the
 !      first and the last particle lost, a whole block of 256 lost, 0 lost,
 !      a few, about 40 %, all; a second loss call on the compacted device
-!      beam without an upload between; a beam larger than the device
-!      buffers (reallocation).  Survivors: all 9 columns bit-identical, in
+!      beam without an upload between; losses only late in the beam (the
+!      moved columns copied back) followed by early ones (buffers swapped);
+!      a beam larger than the device buffers (reallocation).  Survivors: all 9 columns bit-identical, in
 !      the host order (ids included); Nptlocal, nplc, nptot, Npt, Current
 !      identical; the device copy stays the newer one (no re-upload).
 !   B. the device sums of diag1_pass1_gpu / diag1_pass2_gpu against the
@@ -227,6 +228,17 @@ contains
       call copy_bunch(bc,bg)
       call mark_host_newer(1)
       call lost_both("edges + 37"//tag,bc,bg,idm,rad,zleng)
+      ! losses only in the last 30 % (compact_lost copies back), then random
+      ! ones from the start on the compacted beam (it swaps the buffers)
+      call fill_beam(bc,1000003,rad,zleng,0.6d0,0.001d0,0.5d0,0.0d0)
+      do k = 1, 41
+        bc%Pts1(1,700000+7000*k) = 1.5d0*rad/Scxlt
+      enddo
+      call copy_bunch(bc,bg)
+      call mark_host_newer(1)
+      call lost_both("late only (copy back)"//tag,bc,bg,idm,rad,zleng)
+      call lost_both("late, again at 0.5 rad (swap)"//tag,bc,bg,idm,0.5d0*rad,zleng)
+      call lost_both("after the swap, at 0.4 rad"//tag,bc,bg,idm,0.4d0*rad,zleng)
       ! about 40 %, a whole block lost, then a second call on the compacted
       ! device beam with a smaller radius (no upload between)
       call fill_beam(bc,1000003,rad,zleng,1.1d0,-0.1d0,1.1d0,0.3d0)

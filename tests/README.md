@@ -175,7 +175,8 @@ within about 1e-16. The loss test and `gradEB_dev` are bit-identical.
 Lost particles are removed on the device (`compact_lost` in
 `ParticleGPU.f90`: keep flags, block counts, a prefix sum and a stable
 scatter into a second buffer, so the survivors keep the host routines'
-order), and the `Flagdiag = 1` moments are summed on the device
+order; then the buffers are swapped, or the moved columns copied back when
+that moves less, and always with `IMPACTT_LOSS=copyback`), and the `Flagdiag = 1` moments are summed on the device
 (`diagnostic1avg_Output` with `devok`), so neither downloads the beam.
 `IMPACTT_LOSS=host` and `IMPACTT_DIAG=host` bring back the host versions.
 No input files:
@@ -189,7 +190,8 @@ srun -n 1 --gpus-per-task=1 tests/test_lostdiag_gpu
   loss, the edge cases (exactly on x = +-xrad, y = +-yrad, r = xrad,
   z = zleng, z = 0 with pz < 0; z <= 0 with pz >= 0 stays), the first and
   last particle, a whole block of 256, about 40 %, all, a second call on the
-  compacted device beam, and a beam larger than the device buffers. The
+  compacted device beam, losses only late in the beam (copy back) followed
+  by early ones (swap), and a beam larger than the device buffers. The
   survivors (all 9 columns, in order), `Nptlocal`, `nplc`, `nptot`, `Npt`
   and `Current` must be identical, and the device copy must stay the newer
   one.
