@@ -38,7 +38,7 @@
         public :: rottoT_gpu, rotbackT_gpu, convEntr_gpu, convExit_gpu
         public :: driftbackhalf_gpu, drifthalfBd_gpu, kick_bend_gpu
         public :: diagB_pass1_gpu, diagB_pass2_gpu
-        public :: loss_on_device
+        public :: loss_on_device, diag1_on_device, diag1_pass1_gpu, diag1_pass2_gpu
 
         type ptsbuf
           real(8), device, allocatable :: p(:,:)  ! (9,cap), same layout as Pts1
@@ -63,6 +63,9 @@
         integer, save :: lossenv = -1           ! 1 on the device, 0 host (IMPACTT_LOSS=host)
         integer, save :: nloss_dev = 0, nloss_host = 0, nloss_odd = 0
         integer(8), save :: nlost_dev = 0, nlost_host = 0
+        ! Flagdiag = 1 moments on the device (diag1_pass1_gpu, diag1_pass2_gpu)
+        integer, save :: diagenv = -1           ! 1 on the device, 0 host (IMPACTT_DIAG=host)
+        integer, save :: ndiag1_dev = 0
 
         ! mesh arrays (global grid, B2.4)
         integer, save :: mnx = 0, mny = 0, mnz = 0
@@ -263,10 +266,11 @@
           if(ncart.gt.0) write(*,'(a,i0,a,3es14.6)') &
             "   first 111 out-of-map point: particle ",icart," at ",pcart
           ! rank 0's counts; loss steps on the host are IMPACTT_LOSS=host
-          write(*,'(a,i0,a,i0,a,i0,a,i0,a)') &
+          write(*,'(a,i0,a,i0,a,i0,a,i0,a,i0,a)') &
                 " GPU particle path: loss steps on the device ",nloss_dev, &
                 " (",nlost_dev," particles), on the host ",nloss_host, &
-                " (",nlost_host," particles)"
+                " (",nlost_host," particles); Flagdiag = 1 moments on the device ", &
+                ndiag1_dev," times"
           if(nloss_odd.gt.0) write(*,'(a,i0,a)') &
             "   loss count of count_lost and of the compaction differed in ", &
             nloss_odd," steps (a particle on a boundary to rounding)"
@@ -1719,6 +1723,311 @@
         a(27) = s27
         amx(5) = m5
         end subroutine d2d_core
+
+        !-------------------------------------------------------------
+        ! moments for diagnostic1avg_Output (Flagdiag = 1) on the device
+        !-------------------------------------------------------------
+        !> True when the Flagdiag = 1 moments can be summed on the device:
+        !> the particles are device-resident and IMPACTT_DIAG is not "host".
+        function diag1_on_device() result(flag)
+        implicit none
+        logical :: flag
+        character(len=32) :: val
+        integer :: stat
+        if(diagenv.lt.0) then
+          diagenv = 1
+          call get_environment_variable("IMPACTT_DIAG",val,status=stat)
+          if(stat.eq.0) then
+            if(trim(val).eq."host") diagenv = 0
+          endif
+        endif
+        flag = (diagenv.eq.1) .and. diag_gpu_ready()
+        end function diag1_on_device
+
+        !> tmplc0 of diagnostic1avg_Output: the sums of columns 1-6 over
+        !> this rank's particles (all bunches).
+        subroutine diag1_pass1_gpu(bunch,nb,sums)
+        implicit none
+        integer, intent(in) :: nb
+        type (BeamBunch), dimension(:), intent(inout) :: bunch
+        double precision, intent(out) :: sums(6)
+        double precision :: part(6)
+        integer :: ib
+        sums = 0.0d0
+        do ib = 1, nb
+          call ensure_device(ib,bunch(ib))
+          if(pb(ib)%n.gt.0) then
+            call e1_core(pb(ib)%p,pb(ib)%n,part)
+            sums = sums + part
+          endif
+        enddo
+        end subroutine diag1_pass1_gpu
+
+        subroutine e1_core(p,n,sm)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(out) :: sm(6)
+        integer :: i
+        real(8) :: s1,s2,s3,s4,s5,s6
+        s1 = 0.0d0
+        s2 = 0.0d0
+        s3 = 0.0d0
+        s4 = 0.0d0
+        s5 = 0.0d0
+        s6 = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          s1 = s1 + p(1,i)
+          s2 = s2 + p(2,i)
+          s3 = s3 + p(3,i)
+          s4 = s4 + p(4,i)
+          s5 = s5 + p(5,i)
+          s6 = s6 + p(6,i)
+        enddo
+        sm(1) = s1
+        sm(2) = s2
+        sm(3) = s3
+        sm(4) = s4
+        sm(5) = s5
+        sm(6) = s6
+        end subroutine e1_core
+
+        !> the local 35 sums of diagnostic1avg_Output (tmplc, same index and
+        !> the same per-particle expressions), the six local maxima and the
+        !> local max r^2.  m0 = (x0,px0,y0,py0,z0,pz0), the global means.
+        subroutine diag1_pass2_gpu(bunch,nb,z0avg,m0,tmplc,localmax,lcrmax)
+        implicit none
+        integer, intent(in) :: nb
+        type (BeamBunch), dimension(:), intent(inout) :: bunch
+        double precision, intent(in) :: z0avg,m0(6)
+        double precision, intent(out) :: tmplc(35),localmax(6),lcrmax
+        double precision :: a(35),amx(6),ar
+        integer :: ib
+        tmplc = 0.0d0
+        localmax = 0.0d0
+        lcrmax = 0.0d0
+        do ib = 1, nb
+          call ensure_device(ib,bunch(ib))
+          if(pb(ib)%n.gt.0) then
+            a = 0.0d0
+            amx = 0.0d0
+            ar = 0.0d0
+            call e2a_core(pb(ib)%p,pb(ib)%n,m0,a,amx,ar)
+            call e2b_core(pb(ib)%p,pb(ib)%n,m0,a,amx)
+            call e2c_core(pb(ib)%p,pb(ib)%n,z0avg,m0,a,amx)
+            call e2d_core(pb(ib)%p,pb(ib)%n,m0,a)
+            tmplc = tmplc + a
+            localmax = max(localmax,amx)
+            lcrmax = max(lcrmax,ar)
+          endif
+        enddo
+        ndiag1_dev = ndiag1_dev + 1
+        end subroutine diag1_pass2_gpu
+
+        ! gamma sums, x and px moments, max |x|, |px|, max r^2
+        subroutine e2a_core(p,n,m0,a,amx,rmx)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(in) :: m0(6)
+        real(8), intent(inout) :: a(35),amx(6)
+        real(8), intent(out) :: rmx
+        integer :: i
+        real(8) :: x0,px0,tmpgam,tmpx,tmpy
+        real(8) :: s1,s2,s7,s10,s11,s12,s13,s22,s23,mx1,mx2,rm
+        x0 = m0(1)
+        px0 = m0(2)
+        s1 = 0.0d0
+        s2 = 0.0d0
+        s7 = 0.0d0
+        s10 = 0.0d0
+        s11 = 0.0d0
+        s12 = 0.0d0
+        s13 = 0.0d0
+        s22 = 0.0d0
+        s23 = 0.0d0
+        mx1 = 0.0d0
+        mx2 = 0.0d0
+        rm = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          tmpgam = sqrt(1.0d0+p(2,i)**2+p(4,i)**2+p(6,i)**2)
+          s22 = s22 + tmpgam
+          s23 = s23 + tmpgam**2
+          tmpx = p(1,i)
+          tmpy = p(3,i)
+          s1 = s1 + (tmpx-x0)**2
+          s10 = s10 + (tmpx-x0)**3
+          s11 = s11 + (tmpx-x0)**4
+          s7 = s7 + (tmpx-x0)*(p(2,i)-px0)
+          s2 = s2 + (p(2,i)-px0)**2
+          s12 = s12 + (p(2,i)-px0)**3
+          s13 = s13 + (p(2,i)-px0)**4
+          mx1 = max(mx1,abs(p(1,i)))
+          mx2 = max(mx2,abs(p(2,i)))
+          rm = max(rm,tmpx**2+tmpy**2)
+        enddo
+        a(1) = s1
+        a(2) = s2
+        a(7) = s7
+        a(10) = s10
+        a(11) = s11
+        a(12) = s12
+        a(13) = s13
+        a(22) = s22
+        a(23) = s23
+        amx(1) = mx1
+        amx(2) = mx2
+        rmx = rm
+        end subroutine e2a_core
+
+        ! y and py moments, max |y|, |py|
+        subroutine e2b_core(p,n,m0,a,amx)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(in) :: m0(6)
+        real(8), intent(inout) :: a(35),amx(6)
+        integer :: i
+        real(8) :: y0,py0,tmpy
+        real(8) :: s3,s4,s8,s14,s15,s16,s17,mx3,mx4
+        y0 = m0(3)
+        py0 = m0(4)
+        s3 = 0.0d0
+        s4 = 0.0d0
+        s8 = 0.0d0
+        s14 = 0.0d0
+        s15 = 0.0d0
+        s16 = 0.0d0
+        s17 = 0.0d0
+        mx3 = 0.0d0
+        mx4 = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          tmpy = p(3,i)
+          s3 = s3 + (tmpy-y0)**2
+          s14 = s14 + (tmpy-y0)**3
+          s15 = s15 + (tmpy-y0)**4
+          s8 = s8 + (tmpy-y0)*(p(4,i)-py0)
+          s4 = s4 + (p(4,i)-py0)**2
+          s16 = s16 + (p(4,i)-py0)**3
+          s17 = s17 + (p(4,i)-py0)**4
+          mx3 = max(mx3,abs(p(3,i)))
+          mx4 = max(mx4,abs(p(4,i)))
+        enddo
+        a(3) = s3
+        a(4) = s4
+        a(8) = s8
+        a(14) = s14
+        a(15) = s15
+        a(16) = s16
+        a(17) = s17
+        amx(3) = mx3
+        amx(4) = mx4
+        end subroutine e2b_core
+
+        ! z and pz moments (z about z0avg), max |z - z0avg|, |pz|
+        subroutine e2c_core(p,n,z0avg,m0,a,amx)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(in) :: z0avg,m0(6)
+        real(8), intent(inout) :: a(35),amx(6)
+        integer :: i
+        real(8) :: pz0
+        real(8) :: s5,s6,s9,s18,s19,s20,s21,mx5,mx6
+        pz0 = m0(6)
+        s5 = 0.0d0
+        s6 = 0.0d0
+        s9 = 0.0d0
+        s18 = 0.0d0
+        s19 = 0.0d0
+        s20 = 0.0d0
+        s21 = 0.0d0
+        mx5 = 0.0d0
+        mx6 = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          s5 = s5 + (p(5,i)-z0avg)**2
+          s18 = s18 + ((p(5,i)-z0avg)**3)
+          s19 = s19 + (p(5,i)-z0avg)**4
+          s9 = s9 + (p(5,i)-z0avg)*(p(6,i)-pz0)
+          s6 = s6 + (p(6,i)-pz0)**2
+          s20 = s20 + (p(6,i)-pz0)**3
+          s21 = s21 + (p(6,i)-pz0)**4
+          mx5 = max(mx5,abs(p(5,i)-z0avg))
+          mx6 = max(mx6,abs(p(6,i)))
+        enddo
+        a(5) = s5
+        a(6) = s6
+        a(9) = s9
+        a(18) = s18
+        a(19) = s19
+        a(20) = s20
+        a(21) = s21
+        amx(5) = mx5
+        amx(6) = mx6
+        end subroutine e2c_core
+
+        ! the 12 cross terms of the 6x6 sigma matrix (tmplc 24-35)
+        subroutine e2d_core(p,n,m0,a)
+        implicit none
+        integer, intent(in) :: n
+        real(8), device :: p(9,n)
+        real(8), intent(in) :: m0(6)
+        real(8), intent(inout) :: a(35)
+        integer :: i
+        real(8) :: x0,px0,y0,py0,z0,pz0,tmpx,tmpy
+        real(8) :: s24,s25,s26,s27,s28,s29,s30,s31,s32,s33,s34,s35
+        x0 = m0(1)
+        px0 = m0(2)
+        y0 = m0(3)
+        py0 = m0(4)
+        z0 = m0(5)
+        pz0 = m0(6)
+        s24 = 0.0d0
+        s25 = 0.0d0
+        s26 = 0.0d0
+        s27 = 0.0d0
+        s28 = 0.0d0
+        s29 = 0.0d0
+        s30 = 0.0d0
+        s31 = 0.0d0
+        s32 = 0.0d0
+        s33 = 0.0d0
+        s34 = 0.0d0
+        s35 = 0.0d0
+        !$cuf kernel do <<<*,*>>>
+        do i = 1, n
+          tmpx = p(1,i)
+          tmpy = p(3,i)
+          s24 = s24 + (tmpx-x0)*(tmpy-y0)
+          s25 = s25 + (tmpx-x0)*(p(4,i)-py0)
+          s26 = s26 + (p(2,i)-px0)*(tmpy-y0)
+          s27 = s27 + (p(2,i)-px0)*(p(4,i)-py0)
+          s28 = s28 + (tmpx-x0)*(p(5,i)-z0)
+          s29 = s29 + (tmpx-x0)*(p(6,i)-pz0)
+          s30 = s30 + (p(5,i)-z0)*(p(2,i)-px0)
+          s31 = s31 + (p(2,i)-px0)*(p(6,i)-pz0)
+          s32 = s32 + (tmpy-y0)*(p(5,i)-z0)
+          s33 = s33 + (tmpy-y0)*(p(6,i)-pz0)
+          s34 = s34 + (p(5,i)-z0)*(p(4,i)-py0)
+          s35 = s35 + (p(4,i)-py0)*(p(6,i)-pz0)
+        enddo
+        a(24) = s24
+        a(25) = s25
+        a(26) = s26
+        a(27) = s27
+        a(28) = s28
+        a(29) = s29
+        a(30) = s30
+        a(31) = s31
+        a(32) = s32
+        a(33) = s33
+        a(34) = s34
+        a(35) = s35
+        end subroutine e2d_core
 
 
         !-------------------------------------------------------------

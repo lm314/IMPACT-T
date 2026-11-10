@@ -59,15 +59,18 @@ At the start of a run rank 0 prints `particles and fields on the GPU`, and one w
 ```
 GPU particle path: host->device copies 1, device->host copies 1, CPU fallback steps 0,
 bends on the GPU 4, on the host 0, 111 out-of-map points 0
+GPU particle path: loss steps on the device K (L particles), on the host 0 (0 particles);
+Flagdiag = 1 moments on the device D times
 ```
 
 - Host→device copies are 1 at the start plus one for each step that ran on the host (fallbacks, `-1` steering, `-11` collimation, a host bend).
-- Device→host copies happen for outputs only (`-2` dumps, the final `fort.50`, and diagnostics other than `Flagdiag = 2`).
+- Device→host copies happen for outputs only (`-2` dumps, the final `fort.50`, and diagnostics other than `Flagdiag = 1` and `2`).
+- Lost particles are removed on the device (a stable compaction: the survivors keep the order the host routines `lostREC_BeamBunch` / `lostDFO_BeamBunch` leave them in), and the `Flagdiag = 1` moments (`diagnostic1avg_Output`, the same `fort.18`, `fort.24-32`) are summed on the device; neither copies the beam. The second summary line counts them (rank 0). `IMPACTT_LOSS=host` and `IMPACTT_DIAG=host` bring back the host versions (a download and, for losses, an upload at the next step), for comparisons. The device compaction allocates a second particle buffer (72 bytes a particle) at the first loss.
 - `111 out-of-map points` counts particles that were outside a type-111 map's grid (they get zero field; the CPU code reads outside its arrays there).
 
 **CPU N-body.** On the CPU, the pair loop takes the sources in blocks of `IMPACTT_PT2PT_BLOCK` particles (default 4096, 320 kB) so that a block stays in cache while every target on the rank reads it (see [Changes to the existing code](#changes-to-the-existing-code)). The fields do not depend on the block size. Any size from 256 to 16,384 gave the same speed on an AMD EPYC 9534 node and on an Apple M1 Max, so the default should not need changing.
 
-The timer table at the end has new entries: `pt2ptfields`, `poisgpu`, `drftgpu`, `depgpu`, `gradgpu`, `kickgpu`, `syncgpu`, `bendgpu`, `csr`.
+The timer table at the end has new entries: `pt2ptfields`, `poisgpu`, `drftgpu`, `depgpu`, `gradgpu`, `kickgpu`, `syncgpu`, `bendgpu`, `lostgpu` (the removal of lost particles, device or host), `csr`. The device `Flagdiag = 1` moments are in `diag`, as the host ones.
 
 **More than one GPU.** Particles are split over the ranks by count, not by position, and each rank deposits onto the whole grid; the charge density is summed over the ranks and every rank solves the whole grid on its GPU. Mesh runs therefore gain nothing from more GPUs: use one. N-body steps split their pair work over the GPUs: 96 % efficiency on 8 GPUs at 6.24M particles (see [N-body steps on several GPUs and CPU nodes](#n-body-steps-on-several-gpus-and-cpu-nodes)).
 
@@ -79,7 +82,7 @@ The timer table at the end has new entries: `pt2ptfields`, `poisgpu`, `drftgpu`,
 
 | Part of a step | GPU | Otherwise |
 |---|---|---|
-| Emission from the cathode, drifts, range and centroid, lost-particle test | yes | |
+| Emission from the cathode, drifts, range and centroid, lost-particle test and removal, `Flagdiag = 1` and `2` moments | yes | `IMPACTT_LOSS=host`, `IMPACTT_DIAG=host`: host |
 | Deposition, Poisson solve (open boundaries, image charge), field gradients | yes (`Flagbc = 1`) | other `Flagbc`: CPU fallback |
 | External fields: type 105 (discrete on-axis data, file ID > 1000), 112, 1 (quadrupole, all modes), 111, 4 (dipole outside the bend loop), 101 (DTL, Fourier on-axis field; the harmonics by recurrence) | yes | other types (102, 103, 104), and 105 with Fourier coefficients: CPU fallback for the steps where the element is in range |
 | Point-to-point space charge (`-15`/`-19`), with image charge, on one or several GPUs | yes | |

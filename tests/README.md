@@ -18,6 +18,7 @@ cite (A1, B2.4, D1.12, ...) are in `doc/GPU_PORT_DESIGN.md`.
 | `test_particle_gpu.f90` | each GPU particle kernel (drifts, emission, deposit, gradients, kicks, external fields of types 105 and 112, losses) against the CPU routine it ports | GPU | 1 |
 | `test_bend_gpu.f90` | the field kinds of types 1, 4 and 111, the bend-frame kernels and diagnostics, and the N-body kick in the bend frame, against the CPU routines | GPU | 1 |
 | `test_dtl_gpu.f90` | the type-101 field (kind 6 of `FieldmapGPU.f90`) against `getfldt_DTL`, nine cells, 5 times, 1e5 points each | GPU | 1 |
+| `test_lostdiag_gpu.f90` | the removal of lost particles on the device (`lost_gpu`) against `lostREC_BeamBunch` / `lostDFO_BeamBunch`, and the `Flagdiag = 1` moments on the device against `diagnostic1avg_Output` on the host | GPU | 1 |
 | `compare_runs.py` | runs one input with two executables and compares `fort.18/24/25/26` and the timers | any | any |
 | `compare_dirs.py` | compares `fort.18/24/25/26` of finished run directories | any | any |
 | `make_test_inputs.py` | writes synthetic input files for `test_bend_gpu` and `test_particle_gpu` | — | — |
@@ -160,13 +161,45 @@ writes synthetic ones and copies the map.
 - The drifts and the emission against `drifthalf`, `drifthalforg`,
   `driftemission` and the emission loop of `AccSimulator`.
 - `singlerange_gpu` against `singlerange`; `lost_gpu` against
-  `lostREC_BeamBunch` with 0 and 37 lost particles.
+  `lostREC_BeamBunch` with 0 and 37 lost particles (on the device unless
+  `IMPACTT_LOSS=host`; `test_lostdiag_gpu` tests it more fully).
 - The deposit (`flagpos` 0 and 1) and `gradEB_dev` against loops transcribed
   from `deposit1_Depositor` and the one-rank, `Flagbc = 1` branches of
   `gradEB_FieldQuant`.
 
 Kicks are compared as the change of momentum, scaled by the largest change:
 within about 1e-16. The loss test and `gradEB_dev` are bit-identical.
+
+## test_lostdiag_gpu
+
+Lost particles are removed on the device (`compact_lost` in
+`ParticleGPU.f90`: keep flags, block counts, a prefix sum and a stable
+scatter into a second buffer, so the survivors keep the host routines'
+order), and the `Flagdiag = 1` moments are summed on the device
+(`diagnostic1avg_Output` with `devok`), so neither downloads the beam.
+`IMPACTT_LOSS=host` and `IMPACTT_DIAG=host` bring back the host versions.
+No input files:
+
+```
+srun -n 1 --gpus-per-task=1 tests/test_lostdiag_gpu
+```
+
+- **A**: `lost_gpu` against `lostREC_BeamBunch` (idm 0) and
+  `lostDFO_BeamBunch` (idm 1) on beams of 300 to 2,000,001 particles: no
+  loss, the edge cases (exactly on x = +-xrad, y = +-yrad, r = xrad,
+  z = zleng, z = 0 with pz < 0; z <= 0 with pz >= 0 stays), the first and
+  last particle, a whole block of 256, about 40 %, all, a second call on the
+  compacted device beam, and a beam larger than the device buffers. The
+  survivors (all 9 columns, in order), `Nptlocal`, `nplc`, `nptot`, `Npt`
+  and `Current` must be identical, and the device copy must stay the newer
+  one.
+- **B**: `diag1_pass1_gpu` and `diag1_pass2_gpu` against the host loop of
+  `diagnostic1avg_Output` transcribed: each of the 35 sums within 1e-12 of
+  the sum of the absolute values of its terms, the maxima identical.
+- **C**: `diagnostic1avg_Output` itself, device against host, two bunches,
+  before and after two loss calls: every number of `fort.18` and
+  `fort.24-32` as written (`e16.8`) within the last printed digit, the
+  counts of `fort.28` identical.
 
 ## test_bend_gpu
 

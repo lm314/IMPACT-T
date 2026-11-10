@@ -760,6 +760,7 @@
 !for the GPU particle path (B2): gpupart selects it for the run (USE_GPU,
 !IMPACTT_PARTICLES), gpustep for one step.
         logical :: gpupart = .false., gpustep = .false., gpuok = .false.
+        logical :: diag1dev = .false.
         logical :: gpuwarned = .false.
         character(len=96) :: gpuwhy
         integer, dimension(3) :: gmesh
@@ -2494,13 +2495,17 @@
  
           !output for every 5 steps
           if(mod(i,5).eq.0) then
+          diag1dev = .false.
 #ifdef USE_GPU
-          !Flagdiag = 2 sums the moments on the device (C1)
-          if(gpupart .and. Flagdiag.ne.2) call ensure_host_all(Ebunch,Nbunch)
+          !Flagdiag = 2 sums the moments on the device (C1), and so does
+          !Flagdiag = 1 unless IMPACTT_DIAG=host
+          if(gpupart .and. Flagdiag.eq.1) diag1dev = diag1_on_device()
+          if(gpupart .and. Flagdiag.ne.2 .and. .not.diag1dev) &
+            call ensure_host_all(Ebunch,Nbunch)
 #endif
 
           if(Flagdiag.eq.1) then
-            call diagnostic1avg_Output(t,Ebunch,Nbunch)
+            call diagnostic1avg_Output(t,Ebunch,Nbunch,diag1dev)
           else if(Flagdiag.eq.2) then
             call diagnostic1avgZ_Output(t,Ebunch,Nbunch)
           else if(Flagdiag.eq.3) then

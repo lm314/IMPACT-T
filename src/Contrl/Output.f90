@@ -18,7 +18,8 @@
         use PhysConstclass
 #ifdef USE_GPU
         use ParticleGPUclass, only: diag_gpu_ready,diag_zsum_gpu,&
-                  diag_pass1_gpu,diag_pass2_gpu,diagB_pass1_gpu,diagB_pass2_gpu
+                  diag_pass1_gpu,diag_pass2_gpu,diagB_pass1_gpu,diagB_pass2_gpu,&
+                  diag1_pass1_gpu,diag1_pass2_gpu
 #endif
 
       contains
@@ -651,12 +652,20 @@
         !> <py^2> and y emittance, <z^2>,<zp>,<pz^2>,z emittance from
         !> multiple bunch/bin at fixed t 
 	!> added 4x4 and 6x6 sigma matrix 
-        subroutine diagnostic1avg_Output(z,this,Nbunch)
+        !> devok (GPU build): the caller has left the particles on the device
+        !> (no download); the sums, maxima and counts then come from the
+        !> device particles (diag1_pass1_gpu, diag1_pass2_gpu), with the same
+        !> per-particle expressions, reductions and output.  Without devok,
+        !> or devok false, the host particles are used, as before.
+        subroutine diagnostic1avg_Output(z,this,Nbunch,devok)
         implicit none
         include 'mpif.h'
         double precision, intent(in) :: z
         type (BeamBunch), dimension(:), intent(inout) :: this
         integer, intent(in) :: Nbunch
+        logical, intent(in), optional :: devok
+        logical :: usegpu
+        real*8, dimension(6) :: m0
         integer :: innp,nptot
         double precision:: den1,den2,sqsum1,sqsum2,sqsum3,sqsum4,&
                           epsx2,epsy2
@@ -692,6 +701,12 @@
         real*8, dimension(6) :: tmplc0,tmpgl0
 
         call starttime_Timer(t0)
+        usegpu = .false.
+#ifdef USE_GPU
+        if(present(devok)) then
+          if(devok) usegpu = diag_gpu_ready()
+        endif
+#endif
 
         qmc = this(1)%Mass/1.d6
         xl = Scxlt
@@ -712,11 +727,17 @@
         den2 = den1*den1
 
         tmplc0 = 0.0d0
+        if(.not.usegpu) then
         do ib = 1, Nbunch
           do i = 1, this(ib)%Nptlocal
             tmplc0(:) = tmplc0(:) + this(ib)%Pts1(1:6,i)
           enddo
         enddo
+#ifdef USE_GPU
+        else
+          call diag1_pass1_gpu(this,Nbunch,tmplc0)
+#endif
+        endif
 
         call MPI_ALLREDUCE(tmplc0,tmpgl0,6,MPI_DOUBLE_PRECISION,&
                         MPI_SUM,MPI_COMM_WORLD,ierr)
@@ -788,6 +809,7 @@
 !        testmax = 0.0
         gamlc = 0.0d0
         gam2lc = 0.0d0
+        if(.not.usegpu) then
         do ib = 1, Nbunch
           innp = this(ib)%Nptlocal
           do i = 1, innp
@@ -914,6 +936,17 @@
         tmplc(33) = ypzlocal
         tmplc(34) = zpylocal
         tmplc(35) = pypzlocal
+#ifdef USE_GPU
+        else
+          m0(1) = x0
+          m0(2) = px0
+          m0(3) = y0
+          m0(4) = py0
+          m0(5) = z0
+          m0(6) = pz0
+          call diag1_pass2_gpu(this,Nbunch,z0avg,m0,tmplc,localmax,lcrmax)
+#endif
+        endif
         
         call MPI_REDUCE(tmplc,tmpgl,35,MPI_DOUBLE_PRECISION,&
                         MPI_SUM,0,MPI_COMM_WORLD,ierr)
