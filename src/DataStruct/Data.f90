@@ -1441,6 +1441,15 @@
         character*6 name1
         character*7 name2
         character*8 name3
+        !binary map 1T<ifile>.T7b (preferred when present): int32 magic
+        !T7B_MAGIC, int32 version 1; then for x, y, z: real*8 min, real*8 max,
+        !int32 intervals; then Ex, Ey, Ez, Bx, By, Bz, each a complex*16 array
+        !(Nx+1, Ny+1, Nz+1) with x fastest (the text file's order). Read with
+        !one statement per array instead of a formatted line per grid point.
+        integer, parameter :: T7B_MAGIC = 1110922313   ! bytes "IT7B"
+        character(len=32) :: bname
+        logical :: isbin
+        integer :: magic,version
 
         name1 = '1Tx.T7'
         name2 = '1Txx.T7'
@@ -1452,7 +1461,32 @@
         call MPI_COMM_RANK(MPI_COMM_WORLD,myrank,ierr) 
 
         !print*,"into read: "
+        isbin = .false.
         if(myrank.eq.0) then
+          write(bname,'(A,I0,A)') '1T',ifile,'.T7b'
+          inquire(file=trim(bname),exist=isbin)
+        endif
+        if(myrank.eq.0 .and. isbin) then
+          open(14,file=trim(bname),status='old',access='stream', &
+               form='unformatted')
+          read(14)magic,version
+          if(magic.ne.T7B_MAGIC .or. version.ne.1) then
+            print*,"Error: ",trim(bname)," is not a version-1 binary map"
+            call MPI_ABORT(MPI_COMM_WORLD,1,ierr)
+          endif
+          read(14)tmp11,tmp22,tmpint
+          this%XminRfgt = tmp11
+          this%XmaxRfgt = tmp22
+          this%NxIntvRfgt = tmpint
+          read(14)tmp11,tmp22,tmpint
+          this%YminRfgt = tmp11
+          this%YmaxRfgt = tmp22
+          this%NyIntvRfgt = tmpint
+          read(14)tmp11,tmp22,tmpint
+          this%ZminRfgt = tmp11
+          this%ZmaxRfgt = tmp22
+          this%NzIntvRfgt = tmpint
+        else if(myrank.eq.0) then
           if((ifile.ge.1).and.(ifile.le.9)) then
             name1(3:3) = char(ifile+48)
             open(14,file=name1,status='old')
@@ -1530,7 +1564,17 @@
         this%Bygridt = cmplx(0.0d0,0.0d0)
         this%Bzgridt = cmplx(0.0d0,0.0d0)
 
-        if(myrank.eq.0) then
+        if(myrank.eq.0 .and. isbin) then
+          read(14)this%Exgridt
+          read(14)this%Eygridt
+          read(14)this%Ezgridt
+          read(14)this%Bxgridt
+          read(14)this%Bygridt
+          read(14)this%Bzgridt
+          close(14)
+          Ndatalc = (this%NxIntvRfgt+1)*(this%NyIntvRfgt+1)* &
+                    (this%NzIntvRfgt+1)
+        else if(myrank.eq.0) then
           n = 0
 50        continue
               read(14,*,end=77)tmp1,tmp2,tmp3,tmp4,tmp5,tmp6

@@ -661,7 +661,7 @@
         double precision, allocatable, dimension(:) :: gammaz
         double precision, allocatable, dimension(:,:) :: brange
         double precision :: dGspread
-        integer, dimension(Maxoverlap) :: tmpfile
+        integer, dimension(Maxoverlap) :: tmpfile,tmptype
         double precision :: tmpcur,totchrg,r0,r0img,tmpimg
         integer :: flagpt2pt,flagpos, flagcathode !//switch for point-to-point calculation and switch for space-charge with z>0
         integer :: flagimgnow !//whether the pt2pt image term is on this step (Flagimg, off past zimage)
@@ -1212,6 +1212,7 @@
         t = tend
         distance = 0.0d0
         tmpfile = 0
+        tmptype = 0
         !length of the total beamline
         blnLength = zBlnelem(2,Nblem)
         ibinitold = 1
@@ -1756,20 +1757,16 @@
             if((idrfile(1,ii).gt.100).or.(idrfile(1,ii).eq.3).or.&
                (idrfile(1,ii).eq.4) .or. (idrfile(1,ii).eq.1)) then 
               isw = 1
-              !check whether the new element is in the old elements range,
-              !which already been read in. 
-              do j = ibinitold,ibendold
-                if(idrfile(2,ii).ne.idrfile(2,j)) then
-                else
-                  isw = 0
-                  exit
-                endif
-              enddo
-              !check whether the new element file has been read in by the
-              !old element.
-              do j = 1, mod(iifile-1,Maxoverlap)+1
-                if(idrfile(2,ii).ne.tmpfile(j)) then
-                else
+              !a file counts as read in exactly when a slot holds it: search
+              !every filled slot (file ID and element type, since the slot
+              !holds that type's data layout). Before: an ID match in the
+              !previous element range skipped the read without assigning a
+              !slot, and the slot search stopped at the current ring position,
+              !so after the ring wrapped a file still in memory was read again
+              !(the 1.3 GB type-111 maps at every later dipole).
+              do j = 1, min(iifile,Maxoverlap)
+                if(idrfile(2,ii).eq.tmpfile(j) .and. &
+                   idrfile(1,ii).eq.tmptype(j)) then
                   isw = 0
                   idrfile(3,ii) = j
                   exit
@@ -1785,6 +1782,7 @@
                 idrfile(3,ii) = mod(iifile-1,Maxoverlap)+1
               endif
               tmpfile(idrfile(3,ii)) = idrfile(2,ii)
+              tmptype(idrfile(3,ii)) = idrfile(1,ii)
 !              print*,"idrfile: ",ii,idrfile(2,ii),idrfile(3,ii),iifile,Maxiifile
               if(isw.eq.1) then !readin new data
               if(idrfile(1,ii).eq.1 .and. idrfile(2,ii).ge.100) then

@@ -53,6 +53,9 @@
         integer, parameter :: Maxiifile = 10
         !> maximum \# of bunches/bins allowed
         integer, parameter :: Nbunchmax = 50
-        !> maximum \# of field overlap allowed
-        integer, parameter :: Maxoverlap = 10
+        !> maximum \# of field overlap allowed; also the number of field-file
+        !> slots kept in memory (AccSimulator: a file already in a slot is not
+        !> read again). 16 (was 10): a lattice with up to 16 distinct field
+        !> files never re-reads one.
+        integer, parameter :: Maxoverlap = 16
       end module NumConstclass
