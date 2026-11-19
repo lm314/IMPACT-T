@@ -1,7 +1,7 @@
 ---
 title: "IMPACT-T on NVIDIA GPUs: design"
 subtitle: "Branch gpu-port-mvp"
-date: "October 2026"
+date: "November 2026"
 section-numbering: ""
 ---
 
@@ -20,7 +20,7 @@ The adaptive time step (`Flagmap` > 1) is on the separate branch `adaptive-step`
 
 ## Point-to-point space charge
 
-- A `-15` element turned point-to-point space charge on for the whole run. Its V3 is the cutoff `r0`: pair distances below `r0` count as `r0`. `r0` is in units of `Scxlt` = c·Dt (the header Dt), not metres, as the pair loop compares it with separations in those units.
+- A `-15` element turned point-to-point space charge on for the whole run. Its V3 is the cutoff `r0`: pair distances below `r0` count as `r0`. `r0` was in units of `Scxlt` = c·Dt (the header Dt), as the pair loop compares it with separations in those units. Since `master` `3e19b7f` V3 is in metres and divided by `Scxlt` when it is read; this branch does the same for V3 and V5 (`8c9926b`), and the kernels still work in `Scxlt` units.
 - The time loop called `kickpt2ptImg_BeamBunch`. Each step it gathered every rank's particles into `ptstot(9,npttot)` with `MPI_ALLGATHER`, and for each local emitted particle (z > 0) summed the relativistic velocity fields over all other emitted particles and then over their mirror images (at −z, with reversed βz and the opposite sign): 2N² pair evaluations per step.
 - The image term ignored `Flagimg` and `zimage`; a particle did not feel its own image (the mesh solver includes it); `ptstot` was a stack array (450 MB at 6.24M particles); the gather assumed every rank holds `nptlc` particles.
 
@@ -51,7 +51,7 @@ The image term follows `Flagimg` and stops when the bunch centroid passes `zimag
 
 Checks (`tests/test_pt2ptfields.f90`, 2k particles, 1 and 4 ranks, identical): image on against an independent direct + self-image sum, 4.4e-12; image off, 2.9e-13; a single particle at rest at height z against e/(4πε₀(2z)²), exact to rounding. A mesh-only run is unchanged.
 
-Point-to-point space charge with image charge needs one-to-one charge: with fewer macroparticles than electrons, each macroparticle's self-image is too strong by the ratio. And `r0` must be in `Scxlt` units: in metres (or 0) it leaves the self-image of a just-emitted electron uncapped, and nearly the whole beam returns to the cathode while the run continues. Check the surviving count (`fort.28`, last column) of any N-body run with emission.
+Point-to-point space charge with image charge needs one-to-one charge: with fewer macroparticles than electrons, each macroparticle's self-image is too strong by the ratio. And the image cutoff (`r0`, or `r0img`) must be near 10 nm: at 0 or a few nm it leaves the self-image of a just-emitted electron nearly uncapped, and the beam returns to the cathode while the run continues. Check the surviving count (`fort.28`, last column) of any N-body run with emission.
 
 ## A2. `pt2ptFields` on the GPU
 
@@ -59,7 +59,7 @@ Point-to-point space charge with image charge needs one-to-one charge: with fewe
 - **Pair math**: `rinv = 1/sqrt(r²)` once per pair and `rinv³`, instead of `sqrt`, `**3` and six divisions per term; `γ²/(γ+1)` and `γ/(γ+1)` precomputed per source (two extra columns of the source array). This made the CPU 1.25× faster too.
 - **Profile** (Nsight Compute, 100k particles): compute-bound (SM 53 %, memory 31 %, DRAM 0 %), FP64 the busiest pipe, occupancy limited by registers. A sweep of `-gpu=maxregcount` gave +3.2 % at 64 and spilling below 56; 64 is set in `CMakeLists.txt`. Shared-memory tiling of the sources has nothing to relieve (every thread reads the same source at once, from cache), and FP32 pair arithmetic would lose µm-scale differences of positions at the metre scale.
 - **Results**: GPU and CPU fields bit-identical (same compiler, same operation order, sequential inner loop); 1.98e11 pair evaluations per second on one H100 at 1M particles with the image on, 1.56e11 with it off (one source read serves two pairs with the image on; the FP64 work per pair is the same). The source count (1M or 6.24M) and the particle distribution do not change the rate.
-- **CPU loop in blocks** (`eb70333`): the CPU build (no OpenACC) passes over the sources in blocks of `IMPACTT_PT2PT_BLOCK` (default 4096) and runs every target over each block, keeping each target's running sums in the output arrays between blocks. The sources are added in the same order as before, so the fields are bit-identical. Unblocked, every target streams the whole source array from memory, which limits a full node at 1M sources and more (6.24M on 128 Zen 4 cores: 6.8e9 pairs/s; blocked 1.23e10, the in-cache rate). Block sizes from 256 to 16,384 give the same rate on Zen 4 and on an Apple M1 Max; 262,144 (21 MB) loses a third. The GPU loop needs no blocking: all threads of a warp read the same source at the same time, and the L1/L2 hit rates are 98–99 % with no DRAM traffic.
+- **CPU loop in blocks** (`275120f`): the CPU build (no OpenACC) passes over the sources in blocks of `IMPACTT_PT2PT_BLOCK` (default 4096) and runs every target over each block, keeping each target's running sums in the output arrays between blocks. The sources are added in the same order as before, so the fields are bit-identical. Unblocked, every target streams the whole source array from memory, which limits a full node at 1M sources and more (6.24M on 128 Zen 4 cores: 6.8e9 pairs/s; blocked 1.23e10, the in-cache rate). Block sizes from 256 to 16,384 give the same rate on Zen 4 and on an Apple M1 Max; 262,144 (21 MB) loses a third. The GPU loop needs no blocking: all threads of a warp read the same source at the same time, and the L1/L2 hit rates are 98–99 % with no DRAM traffic.
 
 ## A3. Several GPUs
 
@@ -412,3 +412,17 @@ IMPACT-T's own 1D CSR model (`csrwakeTrIGF_FieldQuant`) is kept on the host: the
 10. The z > 0 emitted test in the bend frame's source build.
 11. A rank with no particles in the rotated range reduction.
 12. Host state that only host mesh steps set (`Nxlocal`, `kadd`, `jadd`; B2.12 item 10): before the fix, a host bend after GPU steps allocated its field arrays at the wrong size (heap corruption) and put the CSR wake on the wrong mesh planes.
+
+# E. Later additions (November 2026)
+
+## E1 Type 101 (DTL) on the GPU (`7c5eeff`)
+
+Field kind 6 of `FieldmapGPU.f90` (`fld_dtl`) is `getfldt_DTL` on the device. The harmonics cos(kθ) and sin(kθ) come from the previous harmonic by angle addition, so a particle needs one `sin` and one `cos` instead of eight per harmonic; the sums, the prefactors, the quadrupole-gradient zones and the off-axis expansion keep the CPU routine's order. The per-step constants (`tmpcos`, `tmpsin`, `xlrep`, and the single-precision `clite` and `pi`) are computed on the host and passed in the element table, as for type 105. The Fourier coefficients go to `fcoefF_d(401,Maxoverlap)` through a new `which = 5` of `fldslot_upload`, called after `read1t_Data` for type 101; `build_active_table` refuses a type-101 slot that was not uploaded. `tests/test_dtl_gpu.f90`: ≤ 1.3e-15 of each component's maximum on nine cells, 5 times across an RF period.
+
+## E2 Lost particles removed on the device (`5527e28`, `94572e6`)
+
+When `count_lost` finds a loss, `compact_lost` removes the lost particles without copying the beam: `k_lost_flag` evaluates the host predicate once per particle and counts the survivors of each block of 256, `k_lost_scan` makes the block offsets (an exclusive prefix sum) and finds the first block with a loss, and `k_lost_scatter` writes the survivors of the moved blocks into a second buffer at block offset + rank within the block. The survivors keep the host routines' order (a stable compaction), so the particle array is the one `lostREC_BeamBunch` / `lostDFO_BeamBunch` would leave. Then whichever moves less: the unmoved prefix is copied into the second buffer and the two buffers are swapped (`move_alloc`), or the moved part is copied back. `Nptlocal`, `Npt` and `Current` are updated as on the host, with one `MPI_ALLREDUCE`; only two integers come back to the host. The second buffer (72 bytes a particle) is allocated at the first loss. `IMPACTT_LOSS=host` and `IMPACTT_LOSS=copyback` keep the old path and the copy back, for comparisons; timer `lostgpu`.
+
+## E3 `Flagdiag = 1` moments on the device (`84237ae`)
+
+`diagnostic1avg_Output` takes an optional `devok`. When the caller sets it (the every-5-steps call on the GPU path), the six first-pass column sums (`diag1_pass1_gpu`) and the 35 second-pass sums, six maxima and the largest r² (`diag1_pass2_gpu`, four CUF reductions with the host loop's per-particle expressions) come from the device particles; the MPI reductions, the arithmetic and the writes of `fort.18` and `fort.24-32` are the host routine's. The sums differ from the host's only in summation order (`fort.18` column 7, the rms energy spread, varies by up to 1.1e-7 of its maximum run to run, through ⟨γ²⟩ − ⟨γ⟩²). The t = 0 call, `Flagdiag = 3` and `105` stay on the host. `IMPACTT_DIAG=host` keeps the host path.

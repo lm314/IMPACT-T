@@ -1,16 +1,18 @@
 ---
 title: "IMPACT-T on NVIDIA GPUs: changes, validation and benchmarks"
 subtitle: "Branch gpu-port-mvp"
-date: "October 2026"
+date: "November 2026"
 ---
 
 # Summary
 
-The branch `gpu-port-mvp` (on top of `master` at `78c029b`) runs the whole time step of IMPACT-T on one or more NVIDIA GPUs: emission, drifts, deposition, the Poisson solve with image charge, the field gradients, the external fields of the main element types, the kick, the diagnostics, the type-4 bend loop with CSR, and the point-to-point (N-body) space charge, including inside bends. Particles stay on the GPU for the whole run, and any step that uses a feature that is not ported falls back to the existing CPU code for that step only. The CPU build is unchanged apart from the bug fixes and one speed change (the N-body pair loop in cache-sized blocks, with bit-identical results) listed in [Changes to the existing code](#changes-to-the-existing-code); without `USE_GPU` no GPU code is compiled.
+The branch `gpu-port-mvp` (on top of `master` at `3e19b7f`) runs the whole time step of IMPACT-T on one or more NVIDIA GPUs: emission, drifts, deposition, the Poisson solve with image charge, the field gradients, the external fields of the main element types (including the DTL), the kick, the removal of lost particles, the diagnostics, the type-4 bend loop with CSR, and the point-to-point (N-body) space charge, including inside bends. Particles stay on the GPU for the whole run, and any step that uses a feature that is not ported falls back to the existing CPU code for that step only. The CPU build is unchanged apart from the bug fixes and one speed change (the N-body pair loop in cache-sized blocks, with bit-identical results) listed in [Changes to the existing code](#changes-to-the-existing-code), and the optional additions in [Input additions](#input-additions); without `USE_GPU` no GPU code is compiled.
 
 On a 1 pC photoinjector beamline (an X-band gun and three linac sections, cathode to 3.1 m, 49,390 steps), one NVIDIA H100 runs a 6.24-million-particle simulation (one macroparticle per electron) in 264 s at 64³ and 336 s at 128³. One 128-core node of AMD EPYC 9534 CPUs takes 1253 s and about 4650 s for the same runs, and the GPU results agree with the CPU results to the eight digits IMPACT-T prints (rms sizes, emittances, bunch length, energy and energy spread at the end of the beamline). Details are in [Validation](#validation) and [Benchmarks](#benchmarks).
 
-While checking the GPU port against the CPU code, we found and fixed a bug in the CPU code's particle exchange between ranks (`ptsmv2_ptclmger`) that corrupts particles at the start of emission in runs with a few million particles on up to 128 ranks; upstream `master` has it too. It and the other fixes to the existing code are described in [Changes to the existing code](#changes-to-the-existing-code). Each is a separate commit and can be taken on its own.
+While checking the GPU port against the CPU code, we found and fixed a bug in the CPU code's particle exchange between ranks (`ptsmv2_ptclmger`) that corrupts particles at the start of emission in runs with a few million particles on up to 128 ranks; upstream `master` has it too. A cross-check against IMPACT-Z on the same lattices found two more bugs that `master` has: the DTL field (type 101) leaves out Ez''' and has cos for sin in the odd Ez'' terms, and the type-4 bend exit drops the reference particle's overshoot, so the bunch arrives up to one step late after every bend. These and the other fixes to the existing code are described in [Changes to the existing code](#changes-to-the-existing-code). Each is a separate commit and can be taken on its own.
+
+**Existing inputs.** An `ImpactT.in` written for `master` runs unchanged: no header line, element type or parameter was removed or reordered, every addition uses a slot `master` ignores, and its default reproduces the old behaviour. `-15` reads its cutoff r0 in metres, as `master` does since `3e19b7f`. Results change where a fix applies (point-to-point space charge with image charge, type-4 bends, DTLs, read-in bunches straddling z = 0, and the CPU particle-exchange overflow); see [Changes to the existing code](#changes-to-the-existing-code). Every example in `examples/` gives byte-identical output to `master` where no fix applies ([Validation](#the-cpu-path-against-upstream)).
 
 The design of each part, with the reasoning behind it, is in `doc/GPU_PORT_DESIGN.md`. The comments in the GPU code cite its section numbers (for example "B2.4" or "D1.12").
 
@@ -19,9 +21,9 @@ The design of each part, with the reasoning behind it, is in `doc/GPU_PORT_DESIG
 | Branch | Contents |
 |---|---|
 | `gpu-port-mvp` | `master` plus the GPU port, the fixes and these documents (the commits are listed in [Appendix A](#appendix-a-commits)) |
-| `adaptive-step` | `gpu-port-mvp` plus an optional adaptive time step (`Flagmap` = n > 1, tolerance 10⁻ⁿ) and its GPU part, two commits. A separate contribution; nothing in `gpu-port-mvp` depends on it. |
+| `adaptive-step` | an optional adaptive time step (`Flagmap` = n > 1, tolerance 10⁻ⁿ) and its GPU part, two commits on top of `gpu-port-mvp` as of 2026-10-27 (on `master` `78c029b`; not yet moved onto the current `gpu-port-mvp`). A separate contribution; nothing in `gpu-port-mvp` depends on it. |
 
-The work was done in stages, named A1–A4 (point-to-point space charge), B1–B2 (mesh solver and particles), C1 (diagnostics) and D1 (quadrupoles, 3D maps, bends, CSR, N-body in bends). The stage names appear in the commit messages and in the code comments.
+The work was done in stages, named A1–A4 (point-to-point space charge), B1–B2 (mesh solver and particles), C1 (diagnostics) and D1 (quadrupoles, 3D maps, bends, CSR, N-body in bends). The stage names appear in the commit messages and in the code comments. Later commits (November 2026) port the DTL, the loss removal and the `Flagdiag = 1` moments, and add the fixes found against IMPACT-Z.
 
 # Building
 
@@ -36,6 +38,7 @@ cmake --build build-gpu -j 16          # -> build-gpu/ImpactTexe-mpi-gpu
 - `USE_GPU=ON` requires `nvfortran` and stops with a message otherwise. It adds `-acc=gpu -gpu=cc90 -gpu=maxregcount:64 -cuda`, links cuFFT, compiles the three GPU source files and defines `USE_GPU`. For another GPU generation, change `cc90` in `src/CMakeLists.txt`.
 - `-gpu=maxregcount:64` was chosen by a sweep over the N-body kernel's register cap (+3 % over the default; much lower caps spill).
 - CPU builds (`USE_GPU=OFF`, gfortran or nvfortran, serial or MPI) are built as before and contain no GPU code; their source changes are listed in [Changes to the existing code](#changes-to-the-existing-code).
+- `src/CMakeLists.txt` needs CMake 3.13 or newer (it was 3.5), for `target_link_options`.
 - The tests in `tests/` are not part of the CMake build; `tests/build_test.sh BUILD_DIR tests/<test>.f90` links one against an existing build (see `tests/README.md`).
 
 # Running
@@ -68,6 +71,8 @@ Flagdiag = 1 moments on the device D times
 - Lost particles are removed on the device (a stable compaction: the survivors keep the order the host routines `lostREC_BeamBunch` / `lostDFO_BeamBunch` leave them in), and the `Flagdiag = 1` moments (`diagnostic1avg_Output`, the same `fort.18`, `fort.24-32`) are summed on the device; neither copies the beam. The second summary line counts them (rank 0). `IMPACTT_LOSS=host` and `IMPACTT_DIAG=host` bring back the host versions (a download and, for losses, an upload at the next step), for comparisons. The device compaction allocates a second particle buffer (72 bytes a particle) at the first loss, scatters the survivors into it and then swaps the two buffers (or, when the first loss is late in the beam, copies the moved part back, whichever moves less); `IMPACTT_LOSS=copyback` always copies back, for comparisons. A third summary line counts the swaps.
 - `111 out-of-map points` counts particles that were outside a type-111 map's grid (they get zero field; the CPU code reads outside its arrays there).
 
+**Timing runs.** Any non-empty `IMPACTT_NODUMP` skips the initial (`fort.40`) and final (`fort.50`) particle text dumps, in every build. At 10⁸ particles each would be about 22 GB, and the `fort.50` write is inside the `integ` timer.
+
 **CPU N-body.** On the CPU, the pair loop takes the sources in blocks of `IMPACTT_PT2PT_BLOCK` particles (default 4096, 320 kB) so that a block stays in cache while every target on the rank reads it (see [Changes to the existing code](#changes-to-the-existing-code)). The fields do not depend on the block size. Any size from 256 to 16,384 gave the same speed on an AMD EPYC 9534 node and on an Apple M1 Max, so the default should not need changing.
 
 The timer table at the end has new entries: `pt2ptfields`, `poisgpu`, `drftgpu`, `depgpu`, `gradgpu`, `kickgpu`, `syncgpu`, `bendgpu`, `lostgpu` (the removal of lost particles, device or host), `csr`. The device `Flagdiag = 1` moments are in `diag`, as the host ones.
@@ -85,6 +90,7 @@ The timer table at the end has new entries: `pt2ptfields`, `poisgpu`, `drftgpu`,
 | Emission from the cathode, drifts, range and centroid, lost-particle test and removal, `Flagdiag = 1` and `2` moments | yes | `IMPACTT_LOSS=host`, `IMPACTT_DIAG=host`: host |
 | Deposition, Poisson solve (open boundaries, image charge), field gradients | yes (`Flagbc = 1`) | other `Flagbc`: CPU fallback |
 | External fields: type 105 (discrete on-axis data, file ID > 1000), 112, 1 (quadrupole, all modes), 111, 4 (dipole outside the bend loop), 101 (DTL, Fourier on-axis field; the harmonics by recurrence) | yes | other types (102, 103, 104), and 105 with Fourier coefficients: CPU fallback for the steps where the element is in range |
+| 2D deposit (azimuthal symmetry, no `-5` element) | | CPU fallback for every step: a GPU run needs a `-5` line |
 | Point-to-point space charge (`-15`/`-19`), with image charge, on one or several GPUs | yes | |
 | Diagnostics `Flagdiag = 2` | yes | 1, 3, 105: on the host after a copy |
 | Type-4 bend loop: mesh or no space charge, CSR, N-body | yes (one bunch, `Flagbc = 1`) | `Nbunch > 1` or `Flagbc ≠ 1`: the host bend loop |
@@ -97,49 +103,58 @@ Not tested on the GPU path: `Nbunch > 1` and the merge, restart (`-3`, `Rstartfl
 
 All are optional; existing inputs behave as before (with the one exception noted for bends).
 
-- **`-15` (point-to-point space charge on), V4 = the z at which it switches on** (default 0: from the start, as before). V3 is `r0` as before, in units of c·Dt (Dt of the header), not metres. **V5 = `r0img`**, the same floor for the image pairs only (c·Dt units; 0 or absent: `r0img = r0`, so older inputs are unchanged). A particle's own image is a pair 2z apart, so a small `r0` (a few nm) loses the particles just emitted unless `r0img` is kept near 10 nm. Example: `0 0 0 -15 0.0 0.0 1.334e-4 0.0008 1.334e-4 /`.
+- **`-15` (point-to-point space charge on), V4 = the z at which it switches on** (default 0: from the start, as before). V3 is the cutoff `r0` in metres, as in `master` since `3e19b7f` (before it, `r0` was in units of c·Dt). **V5 = `r0img`**, the same cutoff for the image pairs only (metres; 0 or absent: `r0img = r0`, so older inputs are unchanged). A particle's own image is a pair 2z apart, so a small `r0` (a few nm) loses the particles just emitted unless `r0img` is kept near 10 nm. Example: `0 0 0 -15 0.0 0.0 5.0e-9 0.0008 1.0e-8 /` (r0 = 5 nm, on from z = 0.8 mm, `r0img` = 10 nm). Several `-15` lines are separate switches at their own z; in `master` the last one read sets r0 and the solver is point-to-point for the whole run.
 - **`-19` (back to the mesh solver), V3 = z.** Example: `0 0 0 -19 0.0 0.0 0.0020 0.0 /`. Up to 100 `-15`/`-19` switches, sorted by z, each acting on the step whose `[distance, distance+dzz]` contains it (the test the `-4` elements use).
 - **Point-to-point space charge in a bend.** A bend uses it when it is on at the bend entrance (a `-15` before the dipole, a `-19` after it). **This changes inputs whose `-15` window spans a bend**: before, the bend used the mesh solver; now it uses point-to-point. Image charge is off in the bend, every particle is a source and a target, and the space-charge magnetic field `bz` is kept.
 - **Binary `-2` dump: V4 > 0** (the 8th number on the line: `0.0 1 199 -2 2.0 2.0 2.0 1 /`). It writes `fort.<Bmpstp>` as a stream: an `int64` particle count, then count × 9 `float64` (the 9 columns of the text dump, same units and order). 72 bytes per particle; 6.24M particles take 0.6 s against 8.8 s for text.
 - **`Flagdist = 168`** reads that stream as `partcl.data`, each rank its own slice; otherwise as `Flagdist = 166` (charge from column 8, `Nemission = 0`, `Np` must equal the count). 1.1 s for 6.24M particles against 28 s for text.
+- **Binary type-111 maps.** `1T<ID>.T7b` is read in place of `1T<ID>.T7` when it exists: an `int32` magic (the bytes `IT7B`), an `int32` version (1), then for x, y and z a `float64` min, a `float64` max and an `int32` number of intervals, then Ex, Ey, Ez, Bx, By, Bz, each (Nx+1)(Ny+1)(Nz+1) `complex128` with x fastest. `utilities/t7_to_t7b.py 1T<ID>.T7` writes it from the text map (`--verify` reads it back and compares bit for bit). The results are the same; the read is faster (two 1.35 GB maps: a 2k-particle run went from 41.6 s to 28.5 s). Remake the `.T7b` when the `.T7` changes: a stale one would be read in its place.
+- **Longer discrete on-axis tables.** Type 105 with file ID > 1000 and type-1 profiles take up to 65,537 E rows (was 9,999). A Fourier field converted to a table needs a step of about 20 µm to stay within 1e-6 of the series with the linear interpolation `getfldt_SolRF` uses.
+- **Field files stay in memory.** A file already read into one of the `Maxoverlap` slots (now 16, was 10) is not read again, matched by file ID and element type. Before, after the 10-slot ring wrapped, a file still in memory was parsed again whenever the range of active elements widened. Results are unchanged.
 
 # Changes to the existing code
 
 These change the behaviour of the CPU code (except where noted), and each was found by running or checking the GPU port against it. Commits are on `gpu-port-mvp`.
 
-**Particle corruption at emission in the particle exchange** (`43a8b63`, `Func/Ptclmger.f90`). `ptsmv2_ptclmger` has four fixed send buffers of 3·`nptmv` = 300,000 particles. Its first stage, which sends a rank's own particles, moves at most `nptmv` per direction and pass and repeats; but its forwarding stage, which passes on particles received from one neighbour that belong further on, wrote into the same buffers with no bounds check. When more than 300,000 particles had to be forwarded in one direction, the writes ran past the end of the buffer and overwrote other particles' records, with the particle count unchanged. This happens at the start of emission, when the whole unemitted bunch sits in one z slab and moves across several ranks at once. In our benchmark (6.24M and 3.12M particles, `Flagdist = 16`) the runs with 3.12M particles on 32 ranks and 6.24M on 32, 64 and 128 ranks ended with the beam 2.4–6.3 µm off axis and about twice the emittance; an instrumented build reported up to 390,000 forwarded particles in one direction. Upstream `master` gives the same numbers. Runs at ≤ 1.56M particles, at 6.24M on 256 or 512 ranks, and on the GPU (no exchange) were not affected. The buffers are now allocatable (they were 86 MB of local arrays) and the forwarding stage grows them as needed. Without an overflow the results are bit-identical to before; with the fix, the affected runs agree with the GPU and with the unaffected CPU runs to all printed digits. **Old CPU results with millions of particles on up to ~128 ranks should be checked**, for example for a centroid that leaves the axis at the first diagnostic steps.
+**Particle corruption at emission in the particle exchange** (`75dde0e`, `Func/Ptclmger.f90`). `ptsmv2_ptclmger` has four fixed send buffers of 3·`nptmv` = 300,000 particles. Its first stage, which sends a rank's own particles, moves at most `nptmv` per direction and pass and repeats; but its forwarding stage, which passes on particles received from one neighbour that belong further on, wrote into the same buffers with no bounds check. When more than 300,000 particles had to be forwarded in one direction, the writes ran past the end of the buffer and overwrote other particles' records, with the particle count unchanged. This happens at the start of emission, when the whole unemitted bunch sits in one z slab and moves across several ranks at once. In our benchmark (6.24M and 3.12M particles, `Flagdist = 16`) the runs with 3.12M particles on 32 ranks and 6.24M on 32, 64 and 128 ranks ended with the beam 2.4–6.3 µm off axis and about twice the emittance; an instrumented build reported up to 390,000 forwarded particles in one direction. Upstream `master` gives the same numbers. Runs at ≤ 1.56M particles, at 6.24M on 256 or 512 ranks, and on the GPU (no exchange) were not affected. The buffers are now allocatable (they were 86 MB of local arrays) and the forwarding stage grows them as needed. Without an overflow the results are bit-identical to before; with the fix, the affected runs agree with the GPU and with the unaffected CPU runs to all printed digits. **Old CPU results with millions of particles on up to ~128 ranks should be checked**, for example for a centroid that leaves the axis at the first diagnostic steps.
 
-**Point-to-point space charge** (A1 `eec48d8`, A4 `abead30`, `Appl/BeamBunch.f90`, `Contrl/AccSimulator.f90`):
+**DTL field** (`6a9c46c`, `Appl/DTL.f90`). `getfld_DTL` and `getfldt_DTL` set Ez''' to 0 and never summed it, so the r³ term of Er and Bφ was missing, and the Ez'' sum had cos where the odd Fourier terms need sin (`getflderr_DTL` and `getflderrold_DTL` were already right). On IMPACT-Z's Example 1 written as an IMPACT-T input (space charge off, 10⁴ particles), the x emittance after the DTL differed from IMPACT-Z by 4.0e-3, and now by 6.4e-4; y and the energy gain were already close. **Every run with a type-101 element changes.**
+
+**Bend exit** (`eaff33d`, `Contrl/AccSimulator.f90`, CPU and GPU path). The type-4 bend loop advances the reference path length by v·Dt and stops at the first step past the bend length; `convExit` then put the reference at the exit whatever the overshoot, so the bunch lost 0 to 1 step of path per bend and arrived late at every later element. The exit now places the reference at its actual path length. On a four-dipole chicane (Dt = 1e-12 s) the bunch arrives 0.171, 0.924, 0.317 and 0.817 ps earlier at the four exits; against IMPACT-Z (10⁴ particles, five cavities after the chicane) the error in the energy gain fell from 4.9e-3 to 7.9e-6. **Every run with a type-4 bend changes, including straight (V3 = 0) bends**; with CSR on, the energy after bend 2 of the chicane changed by -198 eV.
+
+**Space-charge mesh at z = 0** (`4303006`, `Contrl/AccSimulator.f90`). The lower z edge of the mesh was clamped to 0 whenever the bunch straddled z = 0, even with no cathode (`Nemission = 0`). A read-in bunch behind z = 0 then lost its z < 0 part from the deposit (on the GPU the run stopped with `dep - index out of range`). The clamp now applies only with a cathode; runs that start at a cathode are byte-identical.
+
+**Point-to-point space charge** (A1 `99aa448`, A4 `e72c124`, `Appl/BeamBunch.f90`, `Contrl/AccSimulator.f90`):
 
 - `kickpt2ptImg_BeamBunch` gathered the particles into a stack array (450 MB at 6.24M particles, a stack overflow) with a gather that assumed every rank holds the same number of particles. It now gathers into a heap array with `MPI_ALLGATHERV` and real counts. The pair loop is a separate routine, `pt2ptFields`, which the GPU code shares.
-- The image term was always on. It now follows `Flagimg` and stops when the bunch passes `zimage`, as in the mesh solver.
-- A particle did not feel its own image; it does now, as in the mesh solver, while the image is on. This needs one-to-one charge (one macroparticle per electron) and an `r0` in c·Dt units (an `r0` written in metres, or 0, leaves the self-image of a newly emitted electron uncapped, and nearly the whole beam returns to the cathode).
+- The image term was always on. It now follows `Flagimg` and stops when the bunch passes `zimage`, as in the mesh solver. (`master` `3e19b7f` now also turns it off with `Flagimg = 0` and past `zimage`, by calling `kickpt2pt_BeamBunch`; here `pt2ptFields` takes a flag, which also serves the GPU path.)
+- A particle did not feel its own image; it does now, as in the mesh solver, while the image is on. This needs one-to-one charge (one macroparticle per electron) and an image cutoff near 10 nm (`r0`, or `r0img` when `r0` is smaller): with a cutoff of 0 or a few nm the self-image of a newly emitted electron is nearly uncapped, and the beam returns to the cathode. With macroparticles much heavier than an electron the self-image is too strong by their charge ratio for any small cutoff.
 - The call passed particle counts taken once before the time loop. Once a run can switch from the mesh to point-to-point (after the mesh steps have moved particles between ranks), that read and wrote outside the particle array (a segmentation fault in a 4-rank run). It now passes the current counts.
 - The pair formula computes 1/r once per pair and precomputes γ²/(γ+1) and γ/(γ+1) per source particle: 1.25× faster on the CPU, with the fields equal to an independent pair sum to 6e-12.
 
-**CPU N-body pair loop in cache-sized blocks** (`eb70333`, `Appl/BeamBunch.f90`), speed only. For each target, `pt2ptFields` read every source (80 bytes) from memory, so with many sources a full node was limited by memory bandwidth: with 6.24M sources, 128 ranks on a 2 × 64-core AMD EPYC 9534 node evaluated 6.8e9 pairs/s against 1.23e10 when the sources fit in cache, while one core alone ran at the same rate either way. The CPU loop now passes over the sources in blocks of `IMPACTT_PT2PT_BLOCK` (default 4096) and runs every target over each block, keeping each target's sums between blocks. The sources are still added in the same order, so the fields are bit-identical for any block size (`tests/test_pt2pt_block.f90`; a 128-rank N-body run gives byte-identical outputs). At 6.24M sources a node now runs at 1.23e10 pairs/s, 1.81× faster. The GPU loop is unchanged.
+**CPU N-body pair loop in cache-sized blocks** (`275120f`, `Appl/BeamBunch.f90`), speed only. For each target, `pt2ptFields` read every source (80 bytes) from memory, so with many sources a full node was limited by memory bandwidth: with 6.24M sources, 128 ranks on a 2 × 64-core AMD EPYC 9534 node evaluated 6.8e9 pairs/s against 1.23e10 when the sources fit in cache, while one core alone ran at the same rate either way. The CPU loop now passes over the sources in blocks of `IMPACTT_PT2PT_BLOCK` (default 4096) and runs every target over each block, keeping each target's sums between blocks. The sources are still added in the same order, so the fields are bit-identical for any block size (`tests/test_pt2pt_block.f90`; a 128-rank N-body run gives byte-identical outputs). At 6.24M sources a node now runs at 1.23e10 pairs/s, 1.81× faster. The GPU loop is unchanged.
 
-**Particle read-in** (`3d8a244`, `990a9c5`, `Appl/Distribution.f90`):
+**Particle read-in** (`6b9a40e`, `a6ce288`, `Appl/Distribution.f90`):
 
 - `readold_Dist` (`Flagdist = 16`) and `read_Dist` (166) had every rank parse the whole `partcl.data` and keep its own slice. With 6.24M particles on 128 ranks that took 396 s (128 parses of a 911 MB file on a shared file system). Rank 0 now parses the file once and sends each rank its slice: 14 s, bit-identical results.
 - The particle ids of `readold_Dist`, `readParmela_Dist` and `readElegant_Dist` were `j + myid*avgpts`, which repeats some ids and skips others when the count does not divide by the number of ranks (the first `nleft` ranks hold one particle more); 51,200 particles on 6 ranks had 51,198 distinct ids. They are now the particles' positions in the file. Coordinates were not affected.
 
-**Field-file readers** (`08d4758`, `DataStruct/Data.f90`): `read1t_Data` (Fourier coefficients, dipole data) read numbers until the end of the file into `Fcoeft(401)`, and `read1tdata_Data` (discrete on-axis data) read the file's own row counts into `Fcoeftdata(4,10002)`, both without a bounds check; a longer file overwrote memory silently. Both now stop the run with a message naming the file and the limit (`MPI_ABORT`; a serial stub is added to `mpistub.f90`).
+**Field-file readers** (`eba221e`, `DataStruct/Data.f90`): `read1t_Data` (Fourier coefficients, dipole data) read numbers until the end of the file into `Fcoeft(401)`, and `read1tdata_Data` (discrete on-axis data) read the file's own row counts into `Fcoeftdata(4,10002)`, both without a bounds check; a longer file overwrote memory silently. Both now stop the run with a message naming the file and the limit (`MPI_ABORT`; a serial stub is added to `mpistub.f90`). `Fcoeftdata` now holds 65,540 rows (`3189cc3`, see [Input additions](#input-additions)), so each field slot takes 2 MB instead of 0.3 MB; with 16 slots that is about 33 MB per rank, on the host and on the GPU.
 
-**Diagnostic outputs** (`cd1469f`, `a15e480`, `616b5dc`, `Contrl/Output.f90`), output only:
+**Diagnostic outputs** (`7a98cac`, `f1f8aa0`, `cbfc4e4`, `Contrl/Output.f90`), output only:
 
 - `fort.29` (third-moment roots) was NaN wherever a third central moment was negative (`m3**(1.0/3.0)`); 493 of 840 entries in a short test run. The 19 such lines in the diagnostic routines now compute `sign(abs(m3)**(1.0/3.0), m3)`, bit-identical where the old value was not NaN. (The lines that already took `abs()` are unchanged, so their sign is lost; the exponent `1.0/3.0` is a default-real constant in both.)
 - `fort.60`/`fort.70` (slice quantities): the slice emittance was the square root of a number that rounding makes slightly negative for a slice of one particle or of nearly zero emittance, and the slice energy spread divided by a zero count for an empty slice. Both now give 0 there.
 
 **Values read before they were set** (all found by a build that initializes every real to a signalling NaN and traps invalid operations; results byte-identical before and after):
 
-- `tbtwstart` (`Contrl/AccSimulator.f90`, `a15e480`) was compared with t every step but set only by a `-6` element. Harmless (its flag is used only by the wake calculation), now initialized.
-- `sum(Np)` (end-of-beam test, `totnpts`) summed all `Nbunchmax` entries of `Np` while only `1..Nbunch` are set (`fe8a75f`); module variables happen to start at zero in practice. `Np`, `Nplocal` and `gbetz` are now zeroed first.
-- `gradEB_FieldQuant` left the guard layers at the edges of the global domain uncomputed, as stack garbage (`7dbfa58`). They are never interpolated from (zeroing them gives byte-identical results with ranks split in y and z), and are now zeroed.
-- `showtime_aux` divided the `MPI_REDUCE` result on every rank, where it is defined on rank 0 only (`616b5dc`).
-- A dipole with zero field (V3 = 0) divided by zero for the bend radius (`616b5dc`); the radius is now set to +∞ explicitly, the value the division gave.
+- `tbtwstart` (`Contrl/AccSimulator.f90`, `f1f8aa0`) was compared with t every step but set only by a `-6` element. Harmless (its flag is used only by the wake calculation), now initialized.
+- `sum(Np)` (end-of-beam test, `totnpts`) summed all `Nbunchmax` entries of `Np` while only `1..Nbunch` are set (`2916fd2`); module variables happen to start at zero in practice. `Np`, `Nplocal` and `gbetz` are now zeroed first.
+- `gradEB_FieldQuant` left the guard layers at the edges of the global domain uncomputed, as stack garbage (`fb0ce5f`). They are never interpolated from (zeroing them gives byte-identical results with ranks split in y and z), and are now zeroed.
+- `showtime_aux` divided the `MPI_REDUCE` result on every rank, where it is defined on rank 0 only (`cbfc4e4`).
+- A dipole with zero field (V3 = 0) divided by zero for the bend radius (`cbfc4e4`); the radius is now set to +∞ explicitly, the value the division gave.
 
-**Zero-length MPI buffers** (`e98daab`, `cd1469f`): `ptsmv2_ptclmger` and `phase_Output` passed an element just past the end of an array (or of an empty array) as the buffer of a receive or send of zero elements. Harmless, but it stops a bounds-checked build; one spare column, and whole-array arguments (the serial build's MPI stub, `mpistub.f90`, gets the matching 2-D variants of `MPI_SEND` and `MPI_RECV`).
+**Zero-length MPI buffers** (`a9b1112`, `7a98cac`): `ptsmv2_ptclmger` and `phase_Output` passed an element just past the end of an array (or of an empty array) as the buffer of a receive or send of zero elements. Harmless, but it stops a bounds-checked build; one spare column, and whole-array arguments (the serial build's MPI stub, `mpistub.f90`, gets the matching 2-D variants of `MPI_SEND` and `MPI_RECV`).
 
 **Noted, not changed:**
 
@@ -147,6 +162,8 @@ These change the behaviour of the CPU code (except where noted), and each was fo
 - The CSR constant `kkcsr = -2/(3*r0bend)**(1.0/3.0)` and several cube roots use a default-real exponent (an error of about 1e-8 relative).
 - `psiroot` (`Appl/Field.f90`, CSR) takes `(24*deltas/r0)**(1.0d0/3.0d0)`, NaN if `deltas < 0`; not checked.
 - The exchange routine's `msk` is an automatic array of one logical per local particle (25 MB of stack if one rank held 6.24M particles).
+- External fields are applied only for the elements that overlap the bunch's `[zmin, zmax]`. While the leading particle is in a gap between two field maps (44–89 µm between the cells of our gun), the previous cell's field is dropped for the whole bunch, including the tail still inside that cell. This holds for every solver; for a longer bunch it lowered γ by 2.8e-4 at a cell exit. A fix would take the element range from every element that overlaps the bunch.
+- A type-1 quadrupole with file ID 0 (hard-edge mode) calls `read1t_Data(…, 0)`, which reads the unconnected unit 14: gfortran reads an empty `fort.14`, an nvfortran build stops with `FIO-F-209`. Work-around: an empty `fort.14` in the run directory.
 - Element crossings (`-2`, `-4`, `-15`, `-19`, ...) act only on the step whose `[distance, distance+dzz]` contains them, and `dzz` uses the speed at the start of the step, so in the gun, where the beam accelerates, there are gaps between successive windows: an element placed in a gap never acts, and then blocks the later elements of its type. An element inside a bend's z range is skipped in the same way. On the first step the crossings are tested with `distance = 0` and `dzz` from `Bkenergy` (the beam's position is computed later in the step), so in a run started from a particle file mid-beamline (`Flagdist = 166/168`), a `-15` meant to act from the start needs V4 = 0; a V4 at the beam's own position is never crossed.
 
 # Design overview
@@ -167,7 +184,7 @@ All comparisons below are between the GPU path and the CPU code, mostly in the s
 
 ## Unit tests
 
-Each test in `tests/` compares GPU kernels with the CPU routines they port, on the same inputs (see `tests/README.md`). All pass at `gpu-port-mvp`'s last commit, with synthetic input files (`tests/make_test_inputs.py`).
+Each test in `tests/` compares GPU kernels with the CPU routines they port, on the same inputs (see `tests/README.md`). All pass, with synthetic input files (`tests/make_test_inputs.py`). The GPU tests were last run on an H100 at `94572e6`; the commits after it change host code only. The CPU tests pass at the last commit.
 
 | Test | What it compares | Agreement |
 |---|---|---|
@@ -175,6 +192,7 @@ Each test in `tests/` compares GPU kernels with the CPU routines they port, on t
 | `test_pt2pt_block` | the blocked CPU pair loop against the unblocked loop, block sizes 1 to more than the source count, image on and off | bit-identical |
 | `test_poisson_gpu` | `openBC3D_gpu` against `openBC3Dnew` (FFTW), and a direct sum | φ ≤ 5e-13 up to 128×128×256; image potential as close to the direct sum as the CPU's (the 8-corner difference of the integrated Green's function limits both); rank counts bit-identical |
 | `test_dtl_gpu` | the type-101 field (kind 6) against `getfldt_DTL` on nine cells, 5 times across an RF period | ≤ 1.3e-15 of each component's maximum |
+| `test_lostdiag_gpu` | loss removal on the device against `lostREC_BeamBunch`/`lostDFO_BeamBunch` (edge cases, 0 to all lost, repeated calls, buffer growth, swap and copy back); `Flagdiag = 1` sums against the host loop; the written `fort.18`, `fort.24-32` | survivors identical in all 9 columns and in order; sums 5.5e-14 of the sum of absolute terms; files within the last printed digit |
 | `test_particle_gpu` | drifts, emission, range, losses, deposit, gradients, the three kicks, external fields of 105 and 112 | kicks ≤ 7.3e-15 of the largest kick (point-to-point 2.9e-13); range, losses and gradients exact; deposit 6e-15 of max ρ |
 | `test_bend_gpu` | quadrupole, dipole and type-111 fields; bend-frame rotations, conversions, drifts; bend kicks; bend diagnostics; N-body kick in the bend frame | ≤ 2e-16 (quadrupole), ≤ 9e-16 (dipole), exact (111); final momenta ≤ 3.1e-16 of \|p\| |
 | `test_bendnbody_cpu` | the CPU N-body kick in the bend frame against the analytic two-particle field | 1.7e-11 |
@@ -196,7 +214,17 @@ On a beamline with quadrupoles, a type-111 RF deflector and a four-dipole chican
 
 ## The CPU path against upstream
 
-`gpu-port-mvp`'s CPU build and `master`, same compiler and flags, on the benchmark case with 51,200 particles from the cathode to 0.2 m (emission, image charge, gun): **every `fort.*` file byte-identical**, serial and with 8 and 32 ranks. (This was checked before the bug fixes; each fix since was checked byte-identical to the previous build except where it removes a NaN or corrects ids, and the exchange fix only where the old code overflowed.)
+**The examples in `examples/`.** `gpu-port-mvp` (`05aee00`) and `master` (`3e19b7f`), CPU builds with the same compiler, flags and FFTW (gfortran 15, Open MPI, macOS arm64), each example in `examples/` as distributed, serial and on 4 ranks (2 × 2), every `fort.*` file compared byte by byte:
+
+| Example | Serial | 4 ranks |
+|---|---|---|
+| `Sample1`, `Sample2_TWS`, `Sample3_3Dfield`, `Sample4_2Dfield`, `Sample6_cavWake` | identical except `fort.29` (NaN replaced by the signed cube root) | identical except `fort.29` (`Sample4`: both stop with `MPI_Abort` after the same steps) |
+| `DemoPhaseScan` (one particle) | identical except `fort.60`/`fort.70` (NaN replaced by 0) | both stop with a segmentation fault (one particle on 4 ranks) |
+| `Sample5_2bunch` (two read-in bunches) | differs: the second bunch straddles z = 0 with `Nemission = -1`, and the mesh-clamp fix (`4303006`) now deposits its z < 0 part. With only that commit reverted, every file is identical except the NaN fixes in `fort.60`/`fort.70` | both go to NaN after about 60 steps (`master` `78c029b` too) |
+
+The same comparison of the branch before the rebase against `78c029b` gave the same result. The two `master` versions give identical outputs on every example (on 4 ranks, all but `Sample5_2bunch`, whose runs go to NaN in both). The `.T7b` path was checked on `Sample3_3Dfield`: with only `1T1.T7b` (made by `utilities/t7_to_t7b.py`) in place of `1T1.T7`, all 14 outputs are byte-identical.
+
+**The benchmark case.** `gpu-port-mvp`'s CPU build and `master`, same compiler and flags, on the benchmark case with 51,200 particles from the cathode to 0.2 m (emission, image charge, gun): **every `fort.*` file byte-identical**, serial and with 8 and 32 ranks. (This was checked before the bug fixes; each fix since was checked byte-identical to the previous build except where it removes a NaN or corrects ids, and the exchange fix only where the old code overflowed.)
 
 ## Run-time checks of the CPU code
 
@@ -236,7 +264,7 @@ Four point-to-point steps of the same beam at 6.24M particles, started at z = 0.
 
 The pair kernel runs at 1.65e11 pair evaluations per second per GPU here. The 1.98e11 of the unit benchmark (`tests/bench_pt2ptfields.f90`) is with the image term on, where each source read serves two pairs (direct and image): the floating-point work per pair is the same (53 FP64 instructions), but the loads, flag tests and loop overhead per pair are smaller (43 against 55 other instructions, Nsight Compute). Measured with the same routine on one H100, image off gives 1.56e11 and image on 1.95e11, for 1M or 6.24M sources and for synthetic particles or this beam alike. The host gather of the 500 MB source array costs about 0.5 s a step at any GPU count, so it would matter only at much smaller particle counts or with many more GPUs. All GPUs ran at 1980 MHz; one reached its thermal limit at 80 °C in two 10 s samples, at 1965 MHz.
 
-**On CPU nodes**, the same beam and input, 2 steps, with the blocked CPU pair loop (`eb70333`, `-O3`) on 1–8 exclusive nodes of 2 × AMD EPYC 9534 (128 ranks a node; `UCX_TLS=self,sm` on one node, `self,sm,ud` on several). Every rank receives all 6.24M sources each step (`MPI_ALLGATHERV`). Step time from the time-stamped log, pair loop from the `pt2ptfields` timer, one run each:
+**On CPU nodes**, the same beam and input, 2 steps, with the blocked CPU pair loop (`275120f`, `-O3`) on 1–8 exclusive nodes of 2 × AMD EPYC 9534 (128 ranks a node; `UCX_TLS=self,sm` on one node, `self,sm,ud` on several). Every rank receives all 6.24M sources each step (`MPI_ALLGATHERV`). Step time from the time-stamped log, pair loop from the `pt2ptfields` timer, one run each:
 
 | Nodes | Ranks | Step (s) | Pair loop (s) | Speed-up | Efficiency |
 |---|---|---|---|---|---|
@@ -246,6 +274,21 @@ The pair kernel runs at 1.65e11 pair evaluations per second per GPU here. The 1.
 | 8 | 1024 | 397 | 396 | 8.00 | 100 % |
 
 That is 1.23e10 pair evaluations per second per node at every node count. The gather itself takes 0.3–0.4 s on 1–8 nodes (timed separately; the transport and the collective component made no more than 0.1 s of difference). Without the blocked loop a node runs at 6.8e9 pairs/s, about 5,700 s a step on one node. Built with `-march=native` (AVX-512 and FMA, which changes the last bits of the fields), one node takes 2409 s a step. One H100 (235 s) does a step 13.5× faster than one node, and eight H100s (30.6 s) 13× faster than eight nodes.
+
+## A lossy DTL lattice, 10⁶ to 10⁸ particles
+
+IMPACT-Z's Example 1 (a DTL lattice with apertures that remove particles) written as an IMPACT-T input, one H100, `IMPACTT_NODUMP=1`, the `integ` timer. Before `5527e28` and `84237ae`, every step with a lost particle and every `Flagdiag = 1` diagnostic copied the whole beam to the host, which was 94 % of the 10⁷ run. "Now" is at `84237ae`, except the two 32×32×64 rows at 10⁷ and 10⁸, which include the buffer swap of `94572e6` (90.1 → 89.2 s and 838 → 819 s):
+
+| Particles | Grid | Before (s) | Now (s) |
+|---|---|---|---|
+| 10⁶ | 32×32×64 | 77.6 | 12.8 |
+| 10⁷ | 32×32×64 | 1208 | 89.2 |
+| 10⁷ | 64³ | 1468 | 90.2 |
+| 10⁷ | 128³ | 1159 | 109 |
+| 10⁷ | 256³ | 1389 | 235 |
+| 10⁸ | 32×32×64 | stopped at 14,000 (of about 20,000) | 819 |
+
+At 10⁸ the kernels take 82 % of the time and the loss removal 102 s (4,777 steps with a loss); the peak device memory is 14.7 GB. The type-101 field on the GPU (`7c5eeff`) is what makes this lattice run on the GPU at all: before it every DTL step fell back to the CPU (10⁵ particles: 9–15 s on the GPU path against 174 s with `IMPACTT_PARTICLES=cpu`).
 
 ## Several runs at once
 
@@ -275,6 +318,8 @@ From the measurements above (one H100 against one 2 × 64-core EPYC 9534 node):
 
 - **Determinism.** The GPU path is not bit-reproducible run to run (FP64 atomics in the deposit and the CSR histogram); two runs differ at the 1e-7 level in column-scaled diagnostics, more in near-zero centroids. The CPU path in the GPU executable is not exactly reproducible either (about 5e-15 in a dump; not investigated).
 - **Text output from nvfortran** (`g0` in `phase_Output`) prints about 16 significant digits, so a text dump written by the GPU executable does not read back bit-exactly; the binary `-2` dump does.
+- **Loss removal on several GPUs** was checked by reading the code only; every run with the device compaction was on one GPU.
+- **`Flagdiag = 3` and `105`** still copy the beam to the host for each diagnostic.
 - **Multi-GPU** gives no speed-up for mesh steps (the solve is repeated on every GPU), and the N-body gather goes through the host (`MPI_ALLGATHERV` of host buffers): about 0.5 s a step at 6.24M particles, 2 % of an 8-GPU step. Multi-GPU runs were measured on one node only.
 - **N-body cost** is O(N²): 235 s per step without image charge at 6.24M particles on one H100 (31 s on 8), so a full point-to-point run of a beamline at that size is a reference calculation, not a tuning tool.
 - **Not tested on the GPU path:** `Nbunch > 1`, restart, `Flagdiag = 105`; untested element types fall back to the CPU per step.
@@ -287,13 +332,16 @@ From the measurements above (one H100 against one 2 × 64-core EPYC 9534 node):
 | `src/Func/PoissonGPU.f90` | new (B1): GPU Poisson solve with cuFFT, Green's-function kernels, `poisson_dev`, `gradEB_dev`, ρ sum over ranks |
 | `src/Appl/ParticleGPU.f90` | new (B2, C1, D1): device particle buffers and residency; drift, emission, range, loss, deposit, kick, N-body source and kick kernels; diagnostics sums; bend-frame kernels and loop helpers; CSR histogram; error flag; counters |
 | `src/Appl/FieldmapGPU.f90` | new (B2.6, D1.2): device copies of the field data slots, the per-step element table, `extfld_dev` with kinds 105, 112, 1, 111, 4, 101 |
-| `src/Contrl/AccSimulator.f90` | GPU hooks and the GPU step and bend blocks (under `USE_GPU`); `-15` V4, V5 and `-19` switches; N-body in bends; the fixes above |
+| `src/Contrl/AccSimulator.f90` | GPU hooks and the GPU step and bend blocks (under `USE_GPU`); `-15` V4, V5 and `-19` switches; N-body in bends; field-file slot search; the fixes above |
 | `src/Appl/BeamBunch.f90` | `pt2ptFields` and `pt2ptFields_dev` (pair loop, CPU and GPU, kept identical), restructured `kickpt2ptImg_BeamBunch`, `kickref_Bd_BeamBunch`, `kickpt2ptBd_BeamBunch` (N-body in bends, CPU) |
 | `src/Appl/Field.f90` | the GPU Poisson call in `update3Otnew_FieldQuant`; zeroed gradient arrays |
 | `src/Appl/Distribution.f90` | read-in on rank 0 (`readslices_Dist`), binary `readbin_Dist` (168), ids |
-| `src/Contrl/Output.f90` | GPU sums in `diagnostic1avgZ_Output` and `diagnostic1avgB_Output`; binary `-2` dump; NaN fixes; MPI buffer fix |
+| `src/Contrl/Output.f90` | GPU sums in `diagnostic1avgZ_Output`, `diagnostic1avgB_Output` and `diagnostic1avg_Output`; binary `-2` dump; `IMPACTT_NODUMP`; NaN fixes; MPI buffer fix |
 | `src/Func/Ptclmger.f90` | the exchange fix |
-| `src/DataStruct/Data.f90` | reader bounds checks |
+| `src/DataStruct/Data.f90` | reader bounds checks; tables up to 65,540 rows; binary `.T7b` maps |
+| `src/DataStruct/NumConst.f90` | `Maxoverlap` 10 → 16 |
+| `src/Appl/DTL.f90` | the DTL field fix |
+| `utilities/t7_to_t7b.py` | new: `.T7` to `.T7b` converter |
 | `src/Func/Timer.f90` | new timers; the rank-0 division |
 | `src/mpistub.f90` | rank-2 `MPI_ALLGATHERV`, `MPI_ABORT` |
 | `src/CMakeLists.txt` | `USE_GPU` option |
@@ -304,21 +352,30 @@ From the measurements above (one H100 against one 2 × 64-core EPYC 9534 node):
 
 | Commit | Stage | Description |
 |---|---|---|
-| `eec48d8` | A1 | `pt2ptFields` split out of `kickpt2ptImg_BeamBunch`; gather and image-term fixes; self-image |
-| `abead30` | A4 | `-15` V4 and `-19` switches; the particle-count fix at the N-body call |
-| `60ef56d` | Phase 0 | `USE_GPU` CMake option; `compare_runs.py` |
-| `d6d3e61`, `6cce2a7`, `0ad5105`, `a72abb5` | A2 | `pt2ptFields` on the GPU (OpenACC); per-source γ terms; profiling harness; register cap |
-| `7ccfba3` | A3 | several GPUs for N-body |
-| `b7aca92` | B1 | GPU Poisson solve |
-| `5e253c8` | B2 | particles, fields and kicks on the GPU |
-| `ceb7892`, `1ddf02d` | | binary `-2` dump, `Flagdist = 168`; I/O timing prints |
-| `d282e75` | C1 | `Flagdiag = 2` moments on the GPU |
-| `7e3e9a3`, `47c0cc1`, `39f6fe8` | D1 | field kinds for types 1, 111, 4; bend-frame kernels; the bend loop on the GPU |
-| `9adaba0` | D1.11 | CSR in the GPU bend loop |
-| `7990b0a` | D1.12 | N-body in the bend frame, CPU and GPU |
-| `78b8791`, `c782ea9`, `845fe1c` | | start-of-run warnings; test documentation and synthetic test inputs |
-| `3d8a244` | | particle read-in on rank 0 |
-| `43a8b63` | | particle exchange overflow |
-| `990a9c5`, `08d4758`, `e98daab`, `cd1469f`, `a15e480`, `fe8a75f`, `7dbfa58`, `616b5dc` | | ids, reader bounds, MPI buffers, diagnostics NaN, uninitialized values, zero-field bend |
-| `eb70333` | | CPU N-body pair loop in cache-sized blocks; `tests/test_pt2pt_block.f90` |
-| `bee821d` and later | | these documents |
+| `99aa448` | A1 | `pt2ptFields` split out of `kickpt2ptImg_BeamBunch`; gather and image-term fixes; self-image |
+| `e72c124` | A4 | `-15` V4 and `-19` switches; the particle-count fix at the N-body call |
+| `bf88b7d` | Phase 0 | `USE_GPU` CMake option; `compare_runs.py` |
+| `34a875d`, `82436c4`, `79f9f23`, `a48a379` | A2 | `pt2ptFields` on the GPU (OpenACC); per-source γ terms; profiling harness; register cap |
+| `31aef91` | A3 | several GPUs for N-body |
+| `8e909c2` | B1 | GPU Poisson solve |
+| `800fdb8` | B2 | particles, fields and kicks on the GPU |
+| `62589e2`, `fb42f8a` | | binary `-2` dump, `Flagdist = 168`; I/O timing prints |
+| `c2f7c83` | C1 | `Flagdiag = 2` moments on the GPU |
+| `7f86669`, `77398cf`, `7ea5333` | D1 | field kinds for types 1, 111, 4; bend-frame kernels; the bend loop on the GPU |
+| `1c3d051` | D1.11 | CSR in the GPU bend loop |
+| `6731f11` | D1.12 | N-body in the bend frame, CPU and GPU |
+| `6b25811`, `b4c530b`, `97729a8` | | start-of-run warnings; test documentation and synthetic test inputs |
+| `6b9a40e` | | particle read-in on rank 0 |
+| `75dde0e` | | particle exchange overflow |
+| `a6ce288`, `eba221e`, `a9b1112`, `7a98cac`, `f1f8aa0`, `2916fd2`, `fb0ce5f`, `cbfc4e4` | | ids, reader bounds, MPI buffers, diagnostics NaN, uninitialized values, zero-field bend |
+| `275120f` | | CPU N-body pair loop in cache-sized blocks; `tests/test_pt2pt_block.f90` |
+| `9693d54` | | serial build: 2-D `MPI_SEND`/`MPI_RECV` in the MPI stub |
+| `e22e63d`, `64c6b0d` | | `-15` V5 = `r0img`; its GPU test |
+| `6a9c46c`, `eaff33d`, `4303006` | | DTL field, bend exit, mesh z clamp |
+| `3189cc3`, `97e2772` | | tables up to 65,537 rows; `IMPACTT_NODUMP` |
+| `7c5eeff` | | type 101 (DTL) on the GPU; `tests/test_dtl_gpu.f90` |
+| `5527e28`, `84237ae`, `5e4d97c`, `94572e6` | | loss removal and `Flagdiag = 1` moments on the device; `tests/test_lostdiag_gpu.f90`; buffer swap |
+| `f0f7edc` | | field files kept in memory (`Maxoverlap` 16); binary `.T7b` maps |
+| `8c9926b` | | `-15` V3 and V5 in metres, as `master` `3e19b7f` |
+| `05aee00` | | `utilities/t7_to_t7b.py` |
+| `3fa2241` and later | | these documents |
