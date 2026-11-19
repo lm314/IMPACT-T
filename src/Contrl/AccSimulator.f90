@@ -714,7 +714,8 @@
         integer :: itsz
         !//switching the space-charge solver between mesh and point-to-point
         !//(N-body) by z: -15 switches to point-to-point at its z (V4), with
-        !//its own cutoff radius r0 (V3); -19 switches back to the mesh
+        !//its own cutoff radius r0 (V3, metres) and image cutoff r0img (V5,
+        !//metres, 0 or absent: r0); -19 switches back to the mesh
         !//solver at its z (V3). Switch points are sorted by z (any number of
         !//times, either direction) and applied with the same crossing test
         !//as tszstart.
@@ -1146,8 +1147,12 @@
               print*,"The maximum # of N-body/mesh solver switches is 100!!!"
               nsw = 100
             endif
+            !V3 (r0) and V5 (r0img) are in metres, as in master 3e19b7f;
+            !the pair kernels work in Scxlt = c*Dt units
             call getparam_BeamLineElem(Blnelem(i),3,swr0(nsw))
+            swr0(nsw) = swr0(nsw)/Scxlt
             call getparam_BeamLineElem(Blnelem(i),5,swr0img(nsw)) !image floor, 0: r0
+            swr0img(nsw) = swr0img(nsw)/Scxlt
             call getparam_BeamLineElem(Blnelem(i),4,swz(nsw))
             swflag(nsw) = 1 !1: switch to pt2pt (N-body)
           endif
@@ -1476,7 +1481,7 @@
             if(myid.eq.0) then
               if(flagpt2pt.eq.1) then
                 print*,"space charge: switch to point-to-point (N-body) at z=",&
-                       distance," r0=",r0," r0img=",r0img
+                       distance," r0(m)=",r0*Scxlt," r0img(m)=",r0img*Scxlt
               else
                 print*,"space charge: switch to the mesh solver at z=",distance
               endif
